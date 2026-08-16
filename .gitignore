@@ -1,0 +1,34 @@
+# ---- data / weights / outputs (never commit) ----
+data/
+models/
+checkpoints/
+logs/
+outputs/
+wandb/
+results/
+*.parquet
+*.arrow
+
+# ---- vendored base framework ----
+vendor/
+
+# ---- python / uv ----
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- env / secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- misc ----
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+
