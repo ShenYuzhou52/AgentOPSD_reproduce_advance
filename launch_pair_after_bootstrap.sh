@@ -15,7 +15,11 @@ export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}"
 export PATH="$CUDA_HOME/bin:$PATH"
 export UV_CACHE_DIR=/data2/ssd/yixinshen/cache/uv
 export RAY_TEMP_DIR=/data2/ssd/yixinshen/ray_tmp
-mkdir -p "$RAY_TEMP_DIR"
+export TRAIN_TMP_DIR=/data2/ssd/yixinshen/train_tmp
+export TMPDIR="$TRAIN_TMP_DIR"
+export TMP="$TRAIN_TMP_DIR"
+export TEMP="$TRAIN_TMP_DIR"
+mkdir -p "$RAY_TEMP_DIR" "$TRAIN_TMP_DIR"
 echo "[$(date '+%F %T')] waiting for FlashAttention build"
 while pgrep -f 'uv pip install.*flash-attn' >/dev/null; do sleep 30; done
 "$PY" -c 'import flash_attn; print("flash_attn ready")'
