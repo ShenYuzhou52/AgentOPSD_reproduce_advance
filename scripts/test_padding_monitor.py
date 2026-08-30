@@ -83,6 +83,7 @@ def test_collapse_alert_requires_three_steps_and_tracks_late_training():
         "agentopsd/belief_revision_abs_mean": 0.0,
         "agentopsd/credit_abs_mean": 0.0,
         "agentopsd/adv_nonfinite_ratio": 0.0,
+        "agentopsd/group_success_mixed_ratio": 1.0,
         "agentopsd/reshape_applied": 1.0,
     }
     records = [monitor.record(diag, step, {}) for step in range(1, 11)]

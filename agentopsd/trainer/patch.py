@@ -24,11 +24,11 @@ import torch
 from agentopsd.credit import AgentOPSDConfig, reshape_advantages
 
 _ORIGINAL_COMPUTE_ADVANTAGE = None
-_RUNTIME: Dict[str, Any] = {"cfg": AgentOPSDConfig(), "multi_turn": True}
+_RUNTIME: Dict[str, Any] = {"cfg": AgentOPSDConfig()}
 _INSTALLED = False
 
 
-def install(cfg_dict: Optional[dict] = None, *, multi_turn: bool = True) -> None:
+def install(cfg_dict: Optional[dict] = None) -> None:
     """Wrap SDAR's GRPO advantage computation with AgentOPSD reshaping.
 
     Must be called on the Ray driver before the trainer's ``fit()`` starts
@@ -39,14 +39,9 @@ def install(cfg_dict: Optional[dict] = None, *, multi_turn: bool = True) -> None
     global _ORIGINAL_COMPUTE_ADVANTAGE, _RUNTIME, _INSTALLED
     import verl.trainer.ppo.skillsd_ray_trainer as skillsd_module
 
-    if not multi_turn:
-        raise RuntimeError(
-            "AgentOPSD requires actor_rollout_ref.rollout.multi_turn.enable=True; "
-            "refusing to run with single-turn masks"
-        )
     if not _INSTALLED:
         _ORIGINAL_COMPUTE_ADVANTAGE = skillsd_module.compute_advantage
-    _RUNTIME = {"cfg": AgentOPSDConfig.from_dict(cfg_dict), "multi_turn": multi_turn}
+    _RUNTIME = {"cfg": AgentOPSDConfig.from_dict(cfg_dict)}
     skillsd_module.compute_advantage = _wrapped_compute_advantage
     _INSTALLED = True
     print(f"[agentopsd] advantage-reshaping hook installed: {_RUNTIME['cfg']}", flush=True)
@@ -67,10 +62,6 @@ def _wrapped_compute_advantage(data, *args, **kwargs):
     cfg = _RUNTIME["cfg"]
     if not cfg.enabled:
         return data
-    if not _RUNTIME["multi_turn"]:
-        raise RuntimeError(
-            "AgentOPSD hook received a non-multi-turn batch; refusing to continue"
-        )
     if "teacher_log_probs" not in data.batch:
         raise RuntimeError("AgentOPSD requires teacher_log_probs; refusing to silently run GRPO")
 
@@ -123,7 +114,7 @@ def _wrapped_compute_advantage(data, *args, **kwargs):
     diag["agentopsd/padding_turn_count"] = float(is_padding.sum())
     diag["agentopsd/active_turn_count"] = float(active.sum())
     diag["agentopsd/reshape_applied"] = 1.0
-    diag["agentopsd/multi_turn_enabled"] = 1.0
+    diag["agentopsd/trajectory_metadata_validated"] = 1.0
     data.meta_info["agentopsd"] = diag
     print("[agentopsd] " + json.dumps(diag, sort_keys=True), flush=True)
     return data

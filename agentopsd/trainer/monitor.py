@@ -79,10 +79,19 @@ class AgentOPSDMonitor:
         saturation = float(record.get("agentopsd/belief_saturation_ratio") or 0.0)
         revision = float(record.get("agentopsd/belief_revision_abs_mean") or 0.0)
         credit = float(record.get("agentopsd/credit_abs_mean") or 0.0)
+        mixed_groups = float(record.get("agentopsd/group_success_mixed_ratio") or 0.0)
         adv_nonfinite = float(record.get("agentopsd/adv_nonfinite_ratio") or 0.0)
 
         belief_saturated = saturation >= 0.95
-        credit_dead = belief_saturated and revision <= 1e-4 and credit <= 1e-4
+        # All-success/all-failure groups have no within-group GRPO contrast and
+        # naturally produce zero credit. Only call this collapse when at least
+        # one group in the batch is informative.
+        credit_dead = (
+            mixed_groups > 0.0
+            and belief_saturated
+            and revision <= 1e-4
+            and credit <= 1e-4
+        )
         has_nonfinite = nonfinite > 0 or adv_nonfinite > 0.0
         signal = credit_dead or has_nonfinite
         if signal:

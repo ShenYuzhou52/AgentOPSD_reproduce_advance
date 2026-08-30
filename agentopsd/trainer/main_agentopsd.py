@@ -83,10 +83,11 @@ class AgentOPSDTaskRunner:
         agentopsd_cfg = config.algorithm.get("agentopsd", {}) or {}
         from agentopsd.trainer.patch import install
 
-        install(
-            OmegaConf.to_container(agentopsd_cfg, resolve=True),
-            multi_turn=config.actor_rollout_ref.rollout.multi_turn.enable,
-        )
+        # SDAR's rollout.multi_turn flag controls its vLLM tool-call backend.
+        # ALFWorld still emits custom flattened turn rows with traj_uid/turn_step
+        # while this flag remains false, so AgentOPSD validates those metadata
+        # fields in its hook instead of coupling to the backend flag.
+        install(OmegaConf.to_container(agentopsd_cfg, resolve=True))
 
         with open_dict(config):
             # AgentOPSD acts only through the reshaped advantage; no SDL loss.

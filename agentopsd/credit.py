@@ -142,6 +142,12 @@ def reshape_advantages(
     for u in np.unique(uid_np):
         group_success[u] = float(np.mean(traj_reward[uid_of_traj == u] > cfg.success_threshold))
 
+    group_success_values = np.asarray(list(group_success.values()), dtype=np.float64)
+    mixed_group_count = int(np.sum((group_success_values > 0.0) & (group_success_values < 1.0)))
+    group_success_std = (
+        float(group_success_values.std(ddof=0)) if group_success_values.size else 0.0
+    )
+
     rows_by_traj: Dict[object, np.ndarray] = {}
     for i, t in enumerate(unique_traj):
         rows_by_traj[t] = np.nonzero(traj_inv == i)[0]
@@ -235,6 +241,10 @@ def reshape_advantages(
         "agentopsd/turns_per_traj_mean": float(total_turns / max(n_traj, 1)),
         "agentopsd/multi_turn_traj_ratio": float(multi_turn_traj / max(n_traj, 1)),
         "agentopsd/group_success_mean": float(success_sum / max(n_traj, 1)),
+        "agentopsd/group_success_std": group_success_std,
+        "agentopsd/group_success_mixed_ratio": float(
+            mixed_group_count / max(len(group_success_values), 1)
+        ),
         "agentopsd/evidence_abs_mean": float(ev_abs_sum / denom),
         "agentopsd/belief_revision_abs_mean": float(rev_sum / denom),
         "agentopsd/credit_abs_mean": float(q_abs_sum / denom),

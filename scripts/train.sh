@@ -71,6 +71,7 @@ esac
 # ---- 数据就绪检查 ----
 case "${ENV_NAME}" in
   alfworld)
+    export ALFWORLD_DATA="${DATA_ROOT}/alfworld"
     TRAIN_DATA="${DATA_ROOT}/verl-agent/text/train.parquet"
     VAL_DATA="${DATA_ROOT}/verl-agent/text/test.parquet"
     [[ -f "${TRAIN_DATA}" && -f "${VAL_DATA}" ]] || {
@@ -121,6 +122,10 @@ RAY_ARGS=()
 if [[ -n "${RAY_NUM_CPUS:-}" ]]; then
   RAY_ARGS+=("ray_init.num_cpus=${RAY_NUM_CPUS}")
 fi
+if [[ -n "${RAY_TEMP_DIR:-}" ]]; then
+  mkdir -p "${RAY_TEMP_DIR}"
+  RAY_ARGS+=("+ray_init.temp_dir=${RAY_TEMP_DIR}")
+fi
 
 RESUME_ARGS=(
   "trainer.resume_mode=${RESUME_MODE}"
@@ -156,7 +161,7 @@ VERL_ARGS=(
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=False"
   "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${MICRO_BATCH_PER_GPU}"
   "actor_rollout_ref.rollout.tensor_model_parallel_size=${TP_SIZE}"
-  "actor_rollout_ref.rollout.multi_turn.enable=True"
+  "actor_rollout_ref.rollout.multi_turn.enable=False"
   "actor_rollout_ref.rollout.name=vllm"
   "actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_MEM_UTIL}"
   "actor_rollout_ref.rollout.enable_chunked_prefill=False"
