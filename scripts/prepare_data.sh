@@ -27,20 +27,41 @@ PY
   fi
 
   log "==> 下载 ALFWorld PDDL/Game/预训练检测器（~/.cache/alfworld）"
-  require_cmd alfworld-download
-  alfworld-download -f
-
-  log "==> 生成占位 parquet（任务在 rollout 时由环境实例化，行数=任务数）"
   export ALFWORLD_DATA="${DATA_ROOT}/alfworld"
   mkdir -p "${ALFWORLD_DATA}"
-  (
-    cd "${SDAR_ROOT}"
-    HF_ENDPOINT="${HF_ENDPOINT}" python3 -m examples.data_preprocess.prepare \
-      --mode text \
-      --local_dir "${DATA_ROOT}/verl-agent" \
-      --train_data_size "${TRAIN_TASKS}" \
-      --val_data_size "${VAL_TASKS}"
-  )
+  require_cmd alfworld-download
+  if [[ -f "${ALFWORLD_DATA}/detectors/mrcnn_alfred_objects_sep13_004.pth" \
+        && -d "${ALFWORLD_DATA}/json_2.1.1/train" \
+        && -f "${ALFWORLD_DATA}/logic/alfred.pddl" ]]; then
+    log "ALFWorld cache exists; skip download"
+  else
+    alfworld-download -f
+  fi
+
+  log "==> 生成占位 parquet（任务在 rollout 时由环境实例化，行数=任务数）"
+  mkdir -p "${DATA_ROOT}/verl-agent/text"
+  TRAIN_TASKS="${TRAIN_TASKS}" VAL_TASKS="${VAL_TASKS}" \
+    OUTPUT_DIR="${DATA_ROOT}/verl-agent/text" python3 - <<'PY'
+import os
+from datasets import Dataset
+output_dir = os.environ["OUTPUT_DIR"]
+def rows(split, count):
+    return [
+        {
+            "data_source": "text",
+            "prompt": [{"role": "user", "content": ""}],
+            "ability": "agent",
+            "extra_info": {"split": split, "index": idx},
+        }
+        for idx in range(count)
+    ]
+Dataset.from_list(rows("train", int(os.environ["TRAIN_TASKS"]))).to_parquet(
+    os.path.join(output_dir, "train.parquet")
+)
+Dataset.from_list(rows("test", int(os.environ["VAL_TASKS"]))).to_parquet(
+    os.path.join(output_dir, "test.parquet")
+)
+PY
   ls -lh "${DATA_ROOT}/verl-agent/text/"
   log "==> ALFWorld 数据就绪: ${DATA_ROOT}/verl-agent/text/{train,test}.parquet"
 }
