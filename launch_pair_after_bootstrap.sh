@@ -18,7 +18,7 @@ echo "[$(date '+%F %T')] waiting for FlashAttention build"
 while pgrep -f 'uv pip install.*flash-attn' >/dev/null; do sleep 30; done
 "$PY" -c 'import flash_attn; print("flash_attn ready")'
 echo "[$(date '+%F %T')] installing DeepSpeed + ALFWorld runtime"
-"$UV" pip install --python "$PY" deepspeed gymnasium==0.29.1 stable-baselines3==2.6.0 alfworld
+"$UV" pip install --python "$PY" deepspeed==0.18.4 gymnasium==0.29.1 stable-baselines3==2.6.0 alfworld
 echo "[$(date '+%F %T')] preparing ALFWorld data"
 bash "$ROOT/scripts/prepare_data.sh" alfworld
 echo "[$(date '+%F %T')] verifying runtime"
