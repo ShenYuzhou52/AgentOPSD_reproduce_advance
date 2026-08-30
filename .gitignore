@@ -25,6 +25,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+/.wandb_api_key
 
 # ---- misc ----
 .DS_Store

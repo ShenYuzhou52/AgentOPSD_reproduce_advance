@@ -14,6 +14,15 @@ if [[ -f "${_CONFIG_FILE}" ]]; then
   set +a
 fi
 
+# Prefer an exported key, otherwise load the one-line local key file. The
+# latter is ignored by git and works for a bootstrap launcher already running.
+_WANDB_KEY_FILE="${WANDB_KEY_FILE:-${AGENTOPSD_REPO_ROOT}/.wandb_api_key}"
+if [[ -z "${WANDB_API_KEY:-}" && -r "${_WANDB_KEY_FILE}" ]]; then
+  WANDB_API_KEY="$(tr -d '\r\n' < "${_WANDB_KEY_FILE}")"
+  export WANDB_API_KEY
+fi
+unset _WANDB_KEY_FILE
+
 # 从 CUDA_VISIBLE_DEVICES 推导卡数
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   CUDA_VISIBLE_DEVICES="2,3,4,5"

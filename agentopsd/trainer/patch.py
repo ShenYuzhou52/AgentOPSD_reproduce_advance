@@ -19,6 +19,7 @@ import json
 from typing import Any, Dict, Optional
 
 import numpy as np
+import torch
 
 from agentopsd.credit import AgentOPSDConfig, reshape_advantages
 
@@ -38,6 +39,11 @@ def install(cfg_dict: Optional[dict] = None, *, multi_turn: bool = True) -> None
     global _ORIGINAL_COMPUTE_ADVANTAGE, _RUNTIME, _INSTALLED
     import verl.trainer.ppo.skillsd_ray_trainer as skillsd_module
 
+    if not multi_turn:
+        raise RuntimeError(
+            "AgentOPSD requires actor_rollout_ref.rollout.multi_turn.enable=True; "
+            "refusing to run with single-turn masks"
+        )
     if not _INSTALLED:
         _ORIGINAL_COMPUTE_ADVANTAGE = skillsd_module.compute_advantage
     _RUNTIME = {"cfg": AgentOPSDConfig.from_dict(cfg_dict), "multi_turn": multi_turn}
@@ -61,45 +67,64 @@ def _wrapped_compute_advantage(data, *args, **kwargs):
     cfg = _RUNTIME["cfg"]
     if not cfg.enabled:
         return data
-    try:
-        if "teacher_log_probs" not in data.batch:
-            return data
-        batch = data.batch
-        non_tensor = data.non_tensor_batch
-        uid = non_tensor.get("uid")
-        traj_uid = non_tensor.get("traj_uid")
-        turn_step = non_tensor.get("turn_step")
-        episode_rewards = non_tensor.get("episode_rewards")
-        if uid is None or traj_uid is None or turn_step is None or episode_rewards is None:
-            print("[agentopsd] WARNING: uid/traj_uid/turn_step/episode_rewards missing; skipping reshape", flush=True)
-            return data
-
-        new_adv, diag = reshape_advantages(
-            advantages=batch["advantages"],
-            teacher_log_probs=batch["teacher_log_probs"],
-            student_log_probs=batch["old_log_probs"],
-            response_mask=batch["response_mask"],
-            uid=np.asarray(uid, dtype=object),
-            traj_uid=np.asarray(traj_uid, dtype=object),
-            turn_step=np.asarray(turn_step, dtype=np.int64),
-            episode_rewards=np.asarray(episode_rewards, dtype=np.float64),
-            cfg=cfg,
+    if not _RUNTIME["multi_turn"]:
+        raise RuntimeError(
+            "AgentOPSD hook received a non-multi-turn batch; refusing to continue"
         )
-        batch["advantages"] = new_adv
-        data.meta_info["agentopsd"] = diag
-        print("[agentopsd] " + json.dumps(diag, sort_keys=True), flush=True)
-        _maybe_wandb_log(diag)
-    except Exception as exc:  # never let credit bookkeeping kill a training step
-        print(f"[agentopsd] WARNING: reshaping skipped this step: {exc!r}", flush=True)
+    if "teacher_log_probs" not in data.batch:
+        raise RuntimeError("AgentOPSD requires teacher_log_probs; refusing to silently run GRPO")
+
+    batch = data.batch
+    non_tensor = data.non_tensor_batch
+    required = ("uid", "traj_uid", "turn_step", "episode_rewards")
+    missing = [key for key in required if non_tensor.get(key) is None]
+    if missing:
+        raise RuntimeError(
+            "AgentOPSD requires multi-turn metadata "
+            f"{required}; missing {missing}. Refusing to silently run GRPO."
+        )
+
+    uid = np.asarray(non_tensor["uid"], dtype=object)
+    traj_uid = np.asarray(non_tensor["traj_uid"], dtype=object)
+    turn_step = np.asarray(non_tensor["turn_step"], dtype=np.int64)
+    episode_rewards = np.asarray(non_tensor["episode_rewards"], dtype=np.float64)
+    is_padding = np.asarray(non_tensor.get("is_padding", np.zeros(len(uid), dtype=bool)), dtype=bool)
+    if is_padding.shape != (len(uid),):
+        raise RuntimeError(f"invalid is_padding shape {is_padding.shape}; expected {(len(uid),)}")
+    for name, values in (
+        ("uid", uid),
+        ("traj_uid", traj_uid),
+        ("turn_step", turn_step),
+        ("episode_rewards", episode_rewards),
+    ):
+        if values.shape != (len(uid),):
+            raise RuntimeError(f"invalid {name} shape {values.shape}; expected {(len(uid),)}")
+    active = ~is_padding
+    if not active.any():
+        raise RuntimeError("AgentOPSD received a batch containing only padding rows")
+    active_t = torch.as_tensor(active, dtype=torch.bool, device=batch["advantages"].device)
+
+    new_adv, diag = reshape_advantages(
+        advantages=batch["advantages"][active_t],
+        teacher_log_probs=batch["teacher_log_probs"][active_t],
+        student_log_probs=batch["old_log_probs"][active_t],
+        response_mask=batch["response_mask"][active_t],
+        uid=uid[active],
+        traj_uid=traj_uid[active],
+        turn_step=turn_step[active],
+        episode_rewards=episode_rewards[active],
+        cfg=cfg,
+    )
+    batch["advantages"][active_t] = new_adv
+    if (~active_t).any():
+        batch["advantages"][~active_t] = 0
+        if "returns" in batch:
+            batch["returns"][~active_t] = 0
+    diag["agentopsd/padding_turn_count"] = float(is_padding.sum())
+    diag["agentopsd/active_turn_count"] = float(active.sum())
+    diag["agentopsd/reshape_applied"] = 1.0
+    diag["agentopsd/multi_turn_enabled"] = 1.0
+    data.meta_info["agentopsd"] = diag
+    print("[agentopsd] " + json.dumps(diag, sort_keys=True), flush=True)
     return data
-
-
-def _maybe_wandb_log(diag: Dict[str, float]) -> None:
-    try:
-        import wandb
-
-        if wandb.run is not None:
-            wandb.log(diag)
-    except Exception:
-        pass
 

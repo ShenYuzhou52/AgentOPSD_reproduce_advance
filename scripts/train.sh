@@ -147,6 +147,7 @@ VERL_ARGS=(
   "actor_rollout_ref.model.use_remove_padding=True"
   "actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH}"
   "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${MICRO_BATCH_PER_GPU}"
+  "actor_rollout_ref.actor.clip_ratio_high=${PPO_CLIP_HIGH}"
   "actor_rollout_ref.actor.use_kl_loss=True"
   "actor_rollout_ref.actor.kl_loss_coef=${KL_COEF}"
   "actor_rollout_ref.actor.kl_loss_type=low_var_kl"
@@ -155,6 +156,7 @@ VERL_ARGS=(
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=False"
   "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${MICRO_BATCH_PER_GPU}"
   "actor_rollout_ref.rollout.tensor_model_parallel_size=${TP_SIZE}"
+  "actor_rollout_ref.rollout.multi_turn.enable=True"
   "actor_rollout_ref.rollout.name=vllm"
   "actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_MEM_UTIL}"
   "actor_rollout_ref.rollout.enable_chunked_prefill=False"
@@ -167,7 +169,8 @@ VERL_ARGS=(
   "actor_rollout_ref.actor.use_invalid_action_penalty=True"
   "actor_rollout_ref.actor.invalid_action_penalty_coef=0.1"
   "algorithm.use_kl_in_reward=False"
-  "+algorithm.agentopsd.enable=${AGENTOPSD_ENABLE}"
+  "+algorithm.compute_mean_std_cross_steps=False"
+  "+algorithm.agentopsd.enabled=${AGENTOPSD_ENABLE}"
   "+algorithm.agentopsd.lam=${AGENTOPSD_LAM}"
   "+algorithm.agentopsd.b=${AGENTOPSD_B}"
   "+algorithm.agentopsd.gamma=${AGENTOPSD_GAMMA}"
@@ -199,14 +202,21 @@ VERL_ARGS=(
 
 log "==> 训练配置:"
 printf '    %s\n' "${VERL_ARGS[@]}" | tee "${RUN_DIR}/config.txt"
-log "==> 启动训练（${N_GPUS} 卡: ${CUDA_VISIBLE_DEVICES}，AgentOPSD enable=${AGENTOPSD_ENABLE}, λ=${AGENTOPSD_LAM}, γ=${AGENTOPSD_GAMMA}）"
+if [[ "${AGENTOPSD_ENABLE}" == "1" ]]; then
+  TRAIN_ENTRY="agentopsd.trainer.main_agentopsd"
+else
+  # A true GRPO control must not construct the teacher/skill provider at all.
+  TRAIN_ENTRY="verl.trainer.main_ppo"
+fi
+log "==> 启动训练（${N_GPUS} 卡: ${CUDA_VISIBLE_DEVICES}，entry=${TRAIN_ENTRY}，AgentOPSD enable=${AGENTOPSD_ENABLE}, λ=${AGENTOPSD_LAM}, γ=${AGENTOPSD_GAMMA}）"
 
 cd "${SDAR_ROOT}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
 PYTHONPATH="${SDAR_ROOT}:${AGENTOPSD_REPO_ROOT}" \
 HF_ENDPOINT="${HF_ENDPOINT:-}" \
 WANDB_API_KEY="${WANDB_API_KEY:-}" \
-python3 -m agentopsd.trainer.main_agentopsd "${VERL_ARGS[@]}" 2>&1 | tee -a "${RUN_DIR}/train.log"
+AGENTOPSD_METRICS_JSONL="${RUN_DIR}/agentopsd_metrics.jsonl" \
+python3 -m "${TRAIN_ENTRY}" "${VERL_ARGS[@]}" 2>&1 | tee -a "${RUN_DIR}/train.log"
 
 log "==> 训练结束（或中断，可用同命令自动续训）。日志: ${RUN_DIR}/train.log"
 

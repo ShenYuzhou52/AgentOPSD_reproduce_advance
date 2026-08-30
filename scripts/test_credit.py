@@ -137,8 +137,36 @@ def test_all_fail_group_has_zero_advantage():
     assert diag["agentopsd/adv_std_after"] == 0.0
 
 
+def test_two_turn_normalization_uses_population_std():
+    # With B0=.5, gamma=0, and evidence [logit(.6), logit(.9)], the two
+    # revisions are [.1, .3]. Population normalization gives z=[-1, +1] and
+    # therefore w=[.8, 1.2]. The sample std would incorrectly weaken this.
+    uid = np.array(["task", "task", "task", "task"], dtype=object)
+    traj_uid = np.array(["positive", "positive", "negative", "negative"], dtype=object)
+    turn_step = np.array([0, 1, 0, 1], dtype=np.int64)
+    rewards = np.array([10.0, 10.0, 0.0, 0.0])
+    advantages = torch.tensor([[1.0], [1.0], [-1.0], [-1.0]])
+    teacher = torch.tensor([[np.log(1.5)], [np.log(9.0)], [0.0], [0.0]])
+
+    out, _ = reshape_advantages(
+        advantages=advantages,
+        teacher_log_probs=teacher,
+        student_log_probs=torch.zeros_like(teacher),
+        response_mask=torch.ones_like(teacher),
+        uid=uid,
+        traj_uid=traj_uid,
+        turn_step=turn_step,
+        episode_rewards=rewards,
+        cfg=AgentOPSDConfig(lam=1.0, b=0.2, gamma=0.0),
+    )
+
+    assert out[0, 0].item() == pytest.approx(0.8, abs=5e-4)
+    assert out[1, 0].item() == pytest.approx(1.2, abs=5e-4)
+
+
 def test_config_from_dict():
     cfg = AgentOPSDConfig.from_dict({"lam": 0.25, "gamma": 0.9, "nope": 1})
     assert cfg.lam == 0.25
     assert cfg.gamma == 0.9
     assert cfg.b == 0.2
+    assert AgentOPSDConfig.from_dict({"enable": False}).enabled is False

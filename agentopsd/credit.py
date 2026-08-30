@@ -39,7 +39,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 
-EPS: float = 1e-6
+EPS: float = 1e-4
 
 
 @dataclasses.dataclass
@@ -47,14 +47,14 @@ class AgentOPSDConfig:
     """AgentOPSD hyperparameters (paper Table 3 / Appendix F).
 
     One shared setting is used across environments and model scales in the
-    paper: λ=0.5, b=0.2, γ=0.95, ε0=1e-3.
+    paper: λ=0.5, b=0.2, γ=0.95, ε0=1e-4.
     """
 
     enabled: bool = True
     lam: float = 0.5  # λ: reshaping weight ∈ [0, 1]; 0 recovers vanilla GRPO
     b: float = 0.2  # b: multiplier band ∈ (0, 1); w_k ∈ [1-b, 1+b]
     gamma: float = 0.95  # γ: evidence decay ∈ (0, 1]
-    eps0: float = 1e-3  # ε0: clip of the group-success prior B0
+    eps0: float = 1e-4  # ε0: clip of the group-success prior B0
     eps_q: float = EPS  # ε: stabilizer in within-trajectory standardization
     success_threshold: float = 0.5  # episode reward > threshold → success
 
@@ -64,13 +64,17 @@ class AgentOPSDConfig:
         if not d:
             return cfg
         for key, value in d.items():
+            # ``enable`` was used by the first shell wrapper. Keep accepting
+            # it so a manual Hydra invocation cannot silently enable credit.
+            if key == "enable":
+                key = "enabled"
             if hasattr(cfg, key) and value is not None:
                 setattr(cfg, key, value)
         return cfg
 
 
-def _logit(p: torch.Tensor) -> torch.Tensor:
-    p = p.clamp(min=EPS, max=1.0 - EPS)
+def _logit(p: torch.Tensor, *, eps: float = EPS) -> torch.Tensor:
+    p = p.clamp(min=eps, max=1.0 - eps)
     return torch.log(p / (1.0 - p))
 
 
@@ -153,6 +157,14 @@ def reshape_advantages(
     w_min = float("inf")
     w_max = float("-inf")
     pivotal = 0
+    belief_saturated = 0
+    success_sum = 0.0
+    belief_min = float("inf")
+    belief_max = float("-inf")
+    raw_w_sum = 0.0
+    raw_w_min = float("inf")
+    raw_w_max = float("-inf")
+    raw_multiplier_clipped = 0
 
     for t in unique_traj:
         rows = rows_by_traj[t]
@@ -168,6 +180,7 @@ def reshape_advantages(
         e = evidence[rows].to(device)  # (K,)
         a_seq = adv_row[rows[0]].to(device)  # broadcast value of this trajectory
         u = uid_np[rows[0]]
+        success_sum += group_success[u]
         b0 = float(np.clip(group_success[u], cfg.eps0, 1.0 - cfg.eps0))
         b0 = torch.tensor(b0, dtype=dtype, device=device)
 
@@ -176,8 +189,11 @@ def reshape_advantages(
         qs = []
         for k in range(K):
             c = cfg.gamma * c + e[k]  # c_k = γ c_{k-1} + e_k
-            ell = _logit(b0) + c  # ℓ_k = logit(B0) + c_k
+            ell = _logit(b0, eps=cfg.eps0) + c  # ℓ_k = logit(B0) + c_k
             b_k = torch.sigmoid(ell)
+            belief_saturated += int(((b_k <= 0.01) | (b_k >= 0.99)).item())
+            belief_min = min(belief_min, b_k.item())
+            belief_max = max(belief_max, b_k.item())
             delta_b = b_k - b_prev  # ΔB_k = B_k - B_{k-1}
             b_prev = b_k
             qs.append(torch.sign(a_seq) * delta_b)  # q_k = sign(A_seq)·ΔB_k
@@ -187,9 +203,17 @@ def reshape_advantages(
         q_abs_sum += q.abs().sum().item()
 
         mu_q = q.mean()
-        sigma_q = q.std(unbiased=True) if K > 1 else torch.zeros((), dtype=dtype, device=device)
+        # Algorithm 1 uses the population std over the K turns of one
+        # trajectory. The unbiased/sample estimate over-amplifies K=2.
+        sigma_q = q.std(unbiased=False) if K > 1 else torch.zeros((), dtype=dtype, device=device)
         z = (q - mu_q) / (sigma_q + cfg.eps_q)
-        w = torch.clamp(1.0 + cfg.b * z, 1.0 - cfg.b, 1.0 + cfg.b)
+        w_lo, w_hi = 1.0 - cfg.b, 1.0 + cfg.b
+        raw_w = 1.0 + cfg.b * z
+        raw_multiplier_clipped += int(((raw_w < w_lo) | (raw_w > w_hi)).sum().item())
+        raw_w_sum += raw_w.sum().item()
+        raw_w_min = min(raw_w_min, raw_w.min().item())
+        raw_w_max = max(raw_w_max, raw_w.max().item())
+        w = torch.clamp(raw_w, w_lo, w_hi)
         w_sum += w.sum().item()
         w_min = min(w_min, w.min().item())
         w_max = max(w_max, w.max().item())
@@ -199,12 +223,18 @@ def reshape_advantages(
         for idx, row in enumerate(rows):
             reshaped[row] = adv_turn[idx]
 
+    valid_adv = advantages[mask]
+    valid_reshaped = reshaped[mask]
+    adv_finite = torch.isfinite(valid_adv) & torch.isfinite(valid_reshaped)
+    adv_nonfinite_count = int((~adv_finite).sum().item()) if adv_finite.numel() else 0
+    adv_abs_sum = valid_reshaped[adv_finite].abs().sum().item() if adv_finite.any() else 0.0
     denom = max(total_turns, 1)
     diag = {
         "agentopsd/traj_count": float(n_traj),
         "agentopsd/turn_count": float(total_turns),
         "agentopsd/turns_per_traj_mean": float(total_turns / max(n_traj, 1)),
         "agentopsd/multi_turn_traj_ratio": float(multi_turn_traj / max(n_traj, 1)),
+        "agentopsd/group_success_mean": float(success_sum / max(n_traj, 1)),
         "agentopsd/evidence_abs_mean": float(ev_abs_sum / denom),
         "agentopsd/belief_revision_abs_mean": float(rev_sum / denom),
         "agentopsd/credit_abs_mean": float(q_abs_sum / denom),
@@ -212,8 +242,17 @@ def reshape_advantages(
         "agentopsd/multiplier_min": float(w_min if w_min < float("inf") else 1.0),
         "agentopsd/multiplier_max": float(w_max if w_max > float("-inf") else 1.0),
         "agentopsd/pivotal_turn_ratio": float(pivotal / denom),
-        "agentopsd/adv_std_before": float(advantages[mask].std().item()) if mask.any() else 0.0,
-        "agentopsd/adv_std_after": float(reshaped[mask].std().item()) if mask.any() else 0.0,
+        "agentopsd/belief_saturation_ratio": float(belief_saturated / denom),
+        "agentopsd/belief_min": float(belief_min if belief_min < float("inf") else 0.0),
+        "agentopsd/belief_max": float(belief_max if belief_max > float("-inf") else 1.0),
+        "agentopsd/multiplier_raw_mean": float(raw_w_sum / denom),
+        "agentopsd/multiplier_raw_min": float(raw_w_min if raw_w_min < float("inf") else 1.0),
+        "agentopsd/multiplier_raw_max": float(raw_w_max if raw_w_max > float("-inf") else 1.0),
+        "agentopsd/multiplier_clip_ratio": float(raw_multiplier_clipped / denom),
+        "agentopsd/adv_abs_mean": float(adv_abs_sum / max(int(adv_finite.sum().item()), 1)),
+        "agentopsd/adv_nonfinite_ratio": float(adv_nonfinite_count / max(valid_reshaped.numel(), 1)),
+        "agentopsd/adv_std_before": float(valid_adv[adv_finite].std(unbiased=False).item()) if adv_finite.any() else 0.0,
+        "agentopsd/adv_std_after": float(valid_reshaped[adv_finite].std(unbiased=False).item()) if adv_finite.any() else 0.0,
     }
     return reshaped, diag
 
