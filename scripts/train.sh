@@ -124,7 +124,7 @@ if [[ -n "${RAY_NUM_CPUS:-}" ]]; then
 fi
 if [[ -n "${RAY_TEMP_DIR:-}" ]]; then
   mkdir -p "${RAY_TEMP_DIR}"
-  RAY_ARGS+=("+ray_init.temp_dir=${RAY_TEMP_DIR}")
+  RAY_ARGS+=("+ray_init._temp_dir=${RAY_TEMP_DIR}")
 fi
 
 RESUME_ARGS=(
