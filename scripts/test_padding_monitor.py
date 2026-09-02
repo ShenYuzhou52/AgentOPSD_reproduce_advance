@@ -93,3 +93,24 @@ def test_collapse_alert_requires_three_steps_and_tracks_late_training():
     assert records[2]["agentopsd/collapse/alert"] == 1.0
     assert records[7]["agentopsd/is_late_training"] == 1.0
     assert records[-1]["agentopsd/collapse/late_alert"] == 1.0
+
+
+def test_finite_advantage_explosion_is_recorded_separately_from_collapse():
+    monitor = AgentOPSDMonitor(total_steps=10)
+    record = monitor.record(
+        {
+            "agentopsd/adv_abs_max": 101.0,
+            "agentopsd/adv_large_ratio": 0.01,
+            "agentopsd/adv_large_threshold": 100.0,
+            "agentopsd/adv_nonfinite_ratio": 0.0,
+            "agentopsd/belief_saturation_ratio": 0.0,
+            "agentopsd/belief_revision_abs_mean": 1.0,
+            "agentopsd/credit_abs_mean": 1.0,
+            "agentopsd/group_success_mixed_ratio": 1.0,
+        },
+        step=1,
+        metrics={},
+    )
+    assert record["agentopsd/numerical/adv_explosion"] == 1.0
+    assert record["agentopsd/numerical/alert"] == 1.0
+    assert record["agentopsd/collapse/signal"] == 0.0

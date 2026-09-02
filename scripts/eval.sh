@@ -22,6 +22,7 @@ done
 
 check_hardware
 require_sdar
+mkdir -p "$RAY_TEMP_DIR"
 
 EXPERIMENT="$(experiment_name)_eval"
 RUN_DIR="${LOG_ROOT}/${EXPERIMENT}"
@@ -115,6 +116,7 @@ VERL_ARGS=(
   "trainer.n_gpus_per_node=${N_GPUS}"
   "trainer.nnodes=1"
   "trainer.ray_wait_register_center_timeout=600"
+  "+ray_init._temp_dir=$RAY_TEMP_DIR"
   "trainer.resume_mode=resume_path"
   "trainer.resume_from_path=${RESUME_CKPT}"
   "trainer.val_only=True"

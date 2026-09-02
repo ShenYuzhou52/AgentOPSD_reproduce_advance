@@ -1,0 +1,234 @@
+diff --git a/verl/trainer/ppo/core_algos.py b/verl/trainer/ppo/core_algos.py
+index 34df954..c8eab72 100644
+--- a/verl/trainer/ppo/core_algos.py
++++ b/verl/trainer/ppo/core_algos.py
+@@ -115,9 +115,11 @@ def compute_grpo_outcome_advantage(
+     response_mask: torch.Tensor,
+     index: np.ndarray,
+     traj_index: np.ndarray,
++    trajectory_scores: torch.Tensor | None = None,
+     epsilon: float = 1e-6,
+     norm_adv_by_std_in_grpo: str = True,
+     compute_mean_std_cross_steps: bool = True,
++    max_abs_advantage: float | None = None,
+ ):
+     """
+     Compute advantage for GRPO, operating only on Outcome reward
+@@ -141,7 +143,19 @@ def compute_grpo_outcome_advantage(
+         Returns: `(torch.Tensor)`
+             shape is (bs, response_length)
+     """
+-    scores = token_level_rewards.sum(dim=-1)
++    # Only valid response tokens may contribute to a trajectory outcome.
++    # This prevents padded/sentinel positions from corrupting group statistics.
++    valid_response_mask = (response_mask > 0).to(dtype=token_level_rewards.dtype)
++    scores = (token_level_rewards * valid_response_mask).sum(dim=-1)
++    if trajectory_scores is not None:
++        trajectory_scores = trajectory_scores.to(device=scores.device, dtype=scores.dtype)
++        if trajectory_scores.shape != scores.shape:
++            raise ValueError(
++                "trajectory_scores must have one scalar per response: "
++                f"got {tuple(trajectory_scores.shape)}, expected {tuple(scores.shape)}"
++            )
++        if not torch.isfinite(trajectory_scores).all():
++            raise RuntimeError("trajectory_scores contains non-finite values")
+
+     id2score = defaultdict(list)
+     id2mean = {}
+@@ -152,26 +166,65 @@ def compute_grpo_outcome_advantage(
+         for i in range(bsz):
+             if (index[i], traj_index[i]) in seen_pairs:
+                 continue
+-            id2score[index[i]].append(scores[i])
++            # In flattened agent trajectories, every turn receives the final
++            # episode outcome. Per-turn invalid-action penalties are applied
++            # separately below; including one of them in a trajectory outcome
++            # makes a zero-variance group explode as penalty / epsilon.
++            group_score = (
++                trajectory_scores[i]
++                if not compute_mean_std_cross_steps and trajectory_scores is not None
++                else scores[i]
++            )
++            id2score[index[i]].append(group_score)
+             if not compute_mean_std_cross_steps:
+                 seen_pairs.add((index[i], traj_index[i]))
+         for idx in id2score:
+             if len(id2score[idx]) == 1:
+-                id2mean[idx] = torch.tensor(0.0)
+-                id2std[idx] = torch.tensor(1.0)
++                id2mean[idx] = torch.zeros((), device=scores.device, dtype=scores.dtype)
++                id2std[idx] = torch.ones((), device=scores.device, dtype=scores.dtype)
+             elif len(id2score[idx]) > 1:
+-                id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
+-                id2std[idx] = torch.std(torch.tensor([id2score[idx]]))
++                group_scores = torch.stack(id2score[idx])
++                id2mean[idx] = torch.mean(group_scores)
++                id2std[idx] = torch.std(group_scores)
+             else:
+                 raise ValueError(f"no score in prompt index: {idx}")
++        normalized_scores = torch.empty_like(scores)
+         for i in range(bsz):
++            score_for_normalization = (
++                trajectory_scores[i]
++                if not compute_mean_std_cross_steps and trajectory_scores is not None
++                else scores[i]
++            )
+             if norm_adv_by_std_in_grpo:
+-                scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
++                normalized_scores[i] = (score_for_normalization - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
+             else:
+-                scores[i] = scores[i] - id2mean[index[i]]
+-        scores = scores.unsqueeze(-1) * response_mask
+-
+-    return scores, scores
++                normalized_scores[i] = score_for_normalization - id2mean[index[i]]
++        advantages = normalized_scores.unsqueeze(-1) * valid_response_mask
++
++        if not compute_mean_std_cross_steps and trajectory_scores is not None:
++            # Preserve the configured per-action invalid-action penalty without
++            # letting it contaminate trajectory-level GRPO normalization.
++            outcome_reward = torch.zeros_like(token_level_rewards)
++            valid_lengths = valid_response_mask.sum(dim=-1).long()
++            valid_rows = valid_lengths > 0
++            rows = torch.nonzero(valid_rows, as_tuple=False).squeeze(-1)
++            outcome_reward[rows, valid_lengths[rows] - 1] = trajectory_scores[rows]
++            action_adjustment = (token_level_rewards - outcome_reward) * valid_response_mask
++            advantages = advantages + action_adjustment
++        if not torch.isfinite(advantages).all():
++            raise RuntimeError("GRPO produced non-finite token advantages")
++        if max_abs_advantage is not None:
++            limit = float(max_abs_advantage)
++            if limit <= 0:
++                raise ValueError(f"max_abs_advantage must be positive, got {limit}")
++            max_abs = float(advantages.abs().max().item()) if advantages.numel() else 0.0
++            if max_abs > limit:
++                raise RuntimeError(
++                    "GRPO advantage magnitude exceeds the configured safety limit: "
++                    f"{max_abs:.6g} > {limit:.6g}. "
++                    "Check response/loss masks and token-level rewards."
++                )
++    return advantages, advantages
+
+
+ def compute_grpo_passk_outcome_advantage(
+diff --git a/verl/trainer/ppo/metric_utils.py b/verl/trainer/ppo/metric_utils.py
+index 32baeca..2a6cda6 100644
+--- a/verl/trainer/ppo/metric_utils.py
++++ b/verl/trainer/ppo/metric_utils.py
+@@ -112,15 +112,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
+         batch = batch.select_idxs(active_indices)
+
+
+-    sequence_score = batch.batch["token_level_scores"].sum(-1)
+-    sequence_reward = batch.batch["token_level_rewards"].sum(-1)
+-    advantages = batch.batch["advantages"]
+-    returns = batch.batch["returns"]
+-
+     max_response_length = batch.batch["responses"].shape[-1]
+-
+     prompt_mask = batch.batch["attention_mask"][:, :-max_response_length].bool()
+-    response_mask = batch.batch["attention_mask"][:, -max_response_length:].bool()
++    response_mask = batch.batch["attention_mask"][:, -max_response_length:] > 0
++    sequence_score = (batch.batch["token_level_scores"] * response_mask).sum(-1)
++    sequence_reward = (batch.batch["token_level_rewards"] * response_mask).sum(-1)
++    advantages = batch.batch["advantages"]
++    returns = batch.batch["returns"]
+
+     max_prompt_length = prompt_mask.size(-1)
+
+diff --git a/verl/trainer/ppo/ray_trainer.py b/verl/trainer/ppo/ray_trainer.py
+index a4a3c72..683abc9 100644
+--- a/verl/trainer/ppo/ray_trainer.py
++++ b/verl/trainer/ppo/ray_trainer.py
+@@ -173,10 +173,10 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController,
+
+     if multi_turn:
+         loss_mask = data.batch["loss_mask"]
+-        response_mask = loss_mask[:, -response_length:]
++        response_mask = (loss_mask[:, -response_length:] > 0).to(loss_mask.dtype)
+     else:
+         attention_mask = data.batch["attention_mask"]
+-        response_mask = attention_mask[:, -response_length:]
++        response_mask = (attention_mask[:, -response_length:] > 0).to(attention_mask.dtype)
+
+     # compute kl between ref_policy and current policy
+     # When apply_kl_penalty, algorithm.use_kl_in_reward=True, so the reference model has been enabled.
+@@ -230,7 +230,7 @@ def apply_invalid_action_penalty(data: DataProto, invalid_action_penalty_coef=fl
+
+         prompt_length = prompt_ids.shape[-1]
+
+-        valid_response_length = data_item.batch['attention_mask'][prompt_length:].sum()
++        valid_response_length = (data_item.batch['attention_mask'][prompt_length:] > 0).sum()
+
+         action_invalid = torch.as_tensor(
+             1.0 - action_valids[i],
+@@ -263,10 +263,10 @@ def compute_response_mask(data: DataProto):
+     responses = data.batch["responses"]
+     response_length = responses.size(1)
+     attention_mask = data.batch["attention_mask"]
+-    return attention_mask[:, -response_length:]
++    return (attention_mask[:, -response_length:] > 0).to(dtype=attention_mask.dtype)
+
+
+-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, compute_mean_std_cross_steps=True, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, **kwargs):
++def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, multi_turn=False, norm_adv_by_std_in_grpo=True, compute_mean_std_cross_steps=True, max_abs_advantage=None, step_advantage_w=1.0, gigpo_mode="mean_std_norm", gigpo_enable_similarity=False, gigpo_similarity_thresh=0.95, **kwargs):
+     """Compute advantage estimates for policy optimization.
+
+     This function computes advantage estimates using various estimators like GAE, GRPO, REINFORCE++, etc.
+@@ -312,14 +312,23 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
+             # If multi-turn, replace the mask with the relevant part of loss_mask
+             response_length = grpo_calculation_mask.size(1)  # Get length from the initial response mask
+             grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]  # This mask is the one intended for GRPO
++        trajectory_scores = None
++        if not compute_mean_std_cross_steps and "episode_rewards" in data.non_tensor_batch:
++            trajectory_scores = torch.as_tensor(
++                np.asarray(data.non_tensor_batch["episode_rewards"], dtype=np.float32),
++                dtype=data.batch["token_level_rewards"].dtype,
++                device=data.batch["token_level_rewards"].device,
++            )
+         # Call compute_grpo_outcome_advantage with parameters matching its definition
+         advantages, returns = core_algos.compute_grpo_outcome_advantage(
+             token_level_rewards=data.batch["token_level_rewards"],
+             response_mask=grpo_calculation_mask,
+             index=data.non_tensor_batch["uid"],
+             traj_index=data.non_tensor_batch['traj_uid'],
++            trajectory_scores=trajectory_scores,
+             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+             compute_mean_std_cross_steps=compute_mean_std_cross_steps,
++            max_abs_advantage=max_abs_advantage,
+         )
+         data.batch["advantages"] = advantages
+         data.batch["returns"] = returns
+@@ -1251,6 +1260,7 @@ class RayPPOTrainer:
+                             lam=self.config.algorithm.lam,
+                             num_repeat=self.config.actor_rollout_ref.rollout.n,
+                             compute_mean_std_cross_steps=self.config.algorithm.get("compute_mean_std_cross_steps", True),
++                            max_abs_advantage=self.config.algorithm.get("max_abs_advantage", None),
+                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                             multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
+                             use_pf_ppo=self.config.algorithm.use_pf_ppo,
+diff --git a/verl/trainer/ppo/rlsd_ray_trainer.py b/verl/trainer/ppo/rlsd_ray_trainer.py
+index e174eae..12f4c17 100644
+--- a/verl/trainer/ppo/rlsd_ray_trainer.py
++++ b/verl/trainer/ppo/rlsd_ray_trainer.py
+@@ -135,7 +135,7 @@ def build_teacher_batch(
+
+         # Combine with response
+         response_ids = batch.batch["responses"][i]
+-        response_mask = original_attention_mask[-response_length:]
++        response_mask = (original_attention_mask[-response_length:] > 0).to(original_attention_mask.dtype)
+
+         teacher_full_ids = torch.cat([teacher_prompt_ids, response_ids])
+         teacher_full_mask = torch.cat([t_prompt_mask, response_mask])
+diff --git a/verl/trainer/ppo/skillsd_ray_trainer.py b/verl/trainer/ppo/skillsd_ray_trainer.py
+index e7da295..a12af93 100644
+--- a/verl/trainer/ppo/skillsd_ray_trainer.py
++++ b/verl/trainer/ppo/skillsd_ray_trainer.py
+@@ -246,6 +246,7 @@ class SkillSDRayTrainer(RLSDRayTrainer):
+                             num_repeat=self.config.actor_rollout_ref.rollout.n,
+                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                             compute_mean_std_cross_steps=self.config.algorithm.get("compute_mean_std_cross_steps", True),
++                            max_abs_advantage=self.config.algorithm.get("max_abs_advantage", None),
+                             multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
+                             use_pf_ppo=self.config.algorithm.use_pf_ppo,
+                             pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,

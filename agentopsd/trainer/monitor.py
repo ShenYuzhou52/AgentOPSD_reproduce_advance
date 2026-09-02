@@ -81,6 +81,9 @@ class AgentOPSDMonitor:
         credit = float(record.get("agentopsd/credit_abs_mean") or 0.0)
         mixed_groups = float(record.get("agentopsd/group_success_mixed_ratio") or 0.0)
         adv_nonfinite = float(record.get("agentopsd/adv_nonfinite_ratio") or 0.0)
+        adv_abs_max = float(record.get("agentopsd/adv_abs_max") or 0.0)
+        adv_large_ratio = float(record.get("agentopsd/adv_large_ratio") or 0.0)
+        adv_large_threshold = float(record.get("agentopsd/adv_large_threshold") or 100.0)
 
         belief_saturated = saturation >= 0.95
         # All-success/all-failure groups have no within-group GRPO contrast and
@@ -93,6 +96,7 @@ class AgentOPSDMonitor:
             and credit <= 1e-4
         )
         has_nonfinite = nonfinite > 0 or adv_nonfinite > 0.0
+        adv_explosion = adv_abs_max > adv_large_threshold or adv_large_ratio > 0.0
         signal = credit_dead or has_nonfinite
         if signal:
             self.collapse_streak += 1
@@ -109,6 +113,8 @@ class AgentOPSDMonitor:
             "agentopsd/collapse/belief_saturated": float(belief_saturated),
             "agentopsd/collapse/credit_dead": float(credit_dead),
             "agentopsd/collapse/nonfinite": float(has_nonfinite),
+            "agentopsd/numerical/adv_explosion": float(adv_explosion),
+            "agentopsd/numerical/alert": float(adv_explosion or has_nonfinite),
             "agentopsd/collapse/signal": float(signal),
             "agentopsd/collapse/streak": float(self.collapse_streak),
             "agentopsd/collapse/alert": float(self.collapse_streak >= self.required_streak),

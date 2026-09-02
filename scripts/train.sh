@@ -11,6 +11,15 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
+# This switch is verl's native SGLang-tool protocol, not the custom
+# AgentSystem ALFWorld trajectory loop. AgentSystem already flattens each
+# environment turn into a response row, so enabling this without a tool
+# configuration is invalid and selects an unsupported rollout path.
+MULTI_TURN_ENABLE="${MULTI_TURN_ENABLE:-false}"
+COMPUTE_MEAN_STD_CROSS_STEPS="${COMPUTE_MEAN_STD_CROSS_STEPS:-false}"
+MAX_ABS_GRPO_ADVANTAGE="${MAX_ABS_GRPO_ADVANTAGE:-100}"
+MAX_ACTOR_CKPT_TO_KEEP="${MAX_ACTOR_CKPT_TO_KEEP:-3}"
+
 usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}"
 }
@@ -39,7 +48,8 @@ check_env
 EXPERIMENT="$(experiment_name)"
 RUN_DIR="${LOG_ROOT}/${EXPERIMENT}"
 CKPT_DIR="${CHECKPOINT_ROOT}/${EXPERIMENT}"
-mkdir -p "${RUN_DIR}" "${CKPT_DIR}"
+ROLLOUT_DATA_DIR="${ROLLOUT_DATA_DIR:-${RUN_DIR}/rollouts}"
+mkdir -p "${RUN_DIR}" "${CKPT_DIR}" "${ROLLOUT_DATA_DIR}"
 log "实验名: ${EXPERIMENT}"
 log "日志:   ${RUN_DIR}"
 log "断点:   ${CKPT_DIR}"
@@ -161,7 +171,7 @@ VERL_ARGS=(
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=False"
   "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${MICRO_BATCH_PER_GPU}"
   "actor_rollout_ref.rollout.tensor_model_parallel_size=${TP_SIZE}"
-  "actor_rollout_ref.rollout.multi_turn.enable=False"
+  "actor_rollout_ref.rollout.multi_turn.enable=${MULTI_TURN_ENABLE}"
   "actor_rollout_ref.rollout.name=vllm"
   "actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_MEM_UTIL}"
   "actor_rollout_ref.rollout.enable_chunked_prefill=False"
@@ -174,7 +184,8 @@ VERL_ARGS=(
   "actor_rollout_ref.actor.use_invalid_action_penalty=True"
   "actor_rollout_ref.actor.invalid_action_penalty_coef=0.1"
   "algorithm.use_kl_in_reward=False"
-  "+algorithm.compute_mean_std_cross_steps=False"
+  "+algorithm.compute_mean_std_cross_steps=${COMPUTE_MEAN_STD_CROSS_STEPS}"
+  "+algorithm.max_abs_advantage=${MAX_ABS_GRPO_ADVANTAGE}"
   "+algorithm.agentopsd.enabled=${AGENTOPSD_ENABLE}"
   "+algorithm.agentopsd.lam=${AGENTOPSD_LAM}"
   "+algorithm.agentopsd.b=${AGENTOPSD_B}"
@@ -196,7 +207,9 @@ VERL_ARGS=(
   "trainer.nnodes=1"
   "trainer.ray_wait_register_center_timeout=600"
   "trainer.save_freq=${SAVE_FREQ}"
+  "trainer.max_actor_ckpt_to_keep=${MAX_ACTOR_CKPT_TO_KEEP}"
   "trainer.test_freq=${TEST_FREQ}"
+  "trainer.rollout_data_dir=${ROLLOUT_DATA_DIR}"
   "trainer.total_epochs=${TRAIN_STEPS}"
   "trainer.val_before_train=True"
   "${RESUME_ARGS[@]}"
@@ -224,4 +237,3 @@ AGENTOPSD_METRICS_JSONL="${RUN_DIR}/agentopsd_metrics.jsonl" \
 python3 -m "${TRAIN_ENTRY}" "${VERL_ARGS[@]}" 2>&1 | tee -a "${RUN_DIR}/train.log"
 
 log "==> 训练结束（或中断，可用同命令自动续训）。日志: ${RUN_DIR}/train.log"
-

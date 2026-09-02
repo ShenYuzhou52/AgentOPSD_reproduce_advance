@@ -233,7 +233,10 @@ def reshape_advantages(
     valid_reshaped = reshaped[mask]
     adv_finite = torch.isfinite(valid_adv) & torch.isfinite(valid_reshaped)
     adv_nonfinite_count = int((~adv_finite).sum().item()) if adv_finite.numel() else 0
-    adv_abs_sum = valid_reshaped[adv_finite].abs().sum().item() if adv_finite.any() else 0.0
+    valid_adv_finite = valid_adv[adv_finite]
+    valid_reshaped_finite = valid_reshaped[adv_finite]
+    adv_abs_sum = valid_reshaped_finite.abs().sum().item() if valid_reshaped_finite.numel() else 0.0
+    adv_large_threshold = 100.0
     denom = max(total_turns, 1)
     diag = {
         "agentopsd/traj_count": float(n_traj),
@@ -260,9 +263,14 @@ def reshape_advantages(
         "agentopsd/multiplier_raw_max": float(raw_w_max if raw_w_max > float("-inf") else 1.0),
         "agentopsd/multiplier_clip_ratio": float(raw_multiplier_clipped / denom),
         "agentopsd/adv_abs_mean": float(adv_abs_sum / max(int(adv_finite.sum().item()), 1)),
+        "agentopsd/input_adv_abs_max": float(valid_adv_finite.abs().max().item()) if valid_adv_finite.numel() else 0.0,
+        "agentopsd/adv_abs_max": float(valid_reshaped_finite.abs().max().item()) if valid_reshaped_finite.numel() else 0.0,
+        "agentopsd/adv_large_ratio": float(
+            (valid_reshaped_finite.abs() > adv_large_threshold).float().mean().item()
+        ) if valid_reshaped_finite.numel() else 0.0,
+        "agentopsd/adv_large_threshold": adv_large_threshold,
         "agentopsd/adv_nonfinite_ratio": float(adv_nonfinite_count / max(valid_reshaped.numel(), 1)),
-        "agentopsd/adv_std_before": float(valid_adv[adv_finite].std(unbiased=False).item()) if adv_finite.any() else 0.0,
-        "agentopsd/adv_std_after": float(valid_reshaped[adv_finite].std(unbiased=False).item()) if adv_finite.any() else 0.0,
+        "agentopsd/adv_std_before": float(valid_adv_finite.std(unbiased=False).item()) if valid_adv_finite.numel() else 0.0,
+        "agentopsd/adv_std_after": float(valid_reshaped_finite.std(unbiased=False).item()) if valid_reshaped_finite.numel() else 0.0,
     }
     return reshaped, diag
-

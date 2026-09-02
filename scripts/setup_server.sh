@@ -4,7 +4,10 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-SDAR_COMMIT="${SDAR_COMMIT:-master}"
+# This pinned upstream revision is the base for patches/sdar-reproduction-fixes.patch.
+# Override with --sdar-commit only together with a compatible patch revision.
+SDAR_COMMIT="${SDAR_COMMIT:-80ce06909d665bfb88ac93ec6db8fa8d82631655}"
+SDAR_PATCH="${AGENTOPSD_REPO_ROOT}/patches/sdar-reproduction-fixes.patch"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) CONDA_ENV="$2"; shift 2 ;;
@@ -34,11 +37,15 @@ if [[ ! -d "${SDAR_ROOT}/.git" ]]; then
   git clone https://github.com/ZJU-REAL/SDAR.git "${SDAR_ROOT}"
 fi
 git -C "${SDAR_ROOT}" fetch --all --tags
-if [[ "${SDAR_COMMIT}" != "master" ]]; then
+if git -C "${SDAR_ROOT}" diff --quiet; then
   git -C "${SDAR_ROOT}" checkout "${SDAR_COMMIT}"
+  git -C "${SDAR_ROOT}" apply --check --ignore-space-change "${SDAR_PATCH}"
+  git -C "${SDAR_ROOT}" apply --ignore-space-change "${SDAR_PATCH}"
+  log "已应用本仓库的 SDAR 复现修复补丁"
+elif git -C "${SDAR_ROOT}" apply --reverse --check --ignore-space-change "${SDAR_PATCH}"; then
+  log "SDAR 复现修复补丁已应用，保留当前工作区"
 else
-  git -C "${SDAR_ROOT}" checkout master
-  git -C "${SDAR_ROOT}" pull --ff-only
+  die "${SDAR_ROOT} 存在无法识别的本地修改；请提交/清理后再执行 setup_server.sh"
 fi
 
 log "==> 用 uv 把项目依赖装进当前 conda 环境（不会动已装好的 torch/vllm/flash-attn/deepspeed）"
@@ -52,4 +59,3 @@ log "==> 完成。下一步:"
 log "    bash scripts/download_model.sh ${MODEL_NAME}"
 log "    bash scripts/prepare_data.sh ${ENV_NAME}"
 log "    bash scripts/train.sh"
-

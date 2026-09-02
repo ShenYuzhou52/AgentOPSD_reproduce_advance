@@ -60,7 +60,7 @@ check_hardware() {
   total="$(gpu_count_visible)"
   visible="$(printf '%s\n' "${CUDA_VISIBLE_DEVICES}" | awk -F',' '{print NF}')"
   log "GPU 总数=${total}，本次使用 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}（${visible} 卡）"
-  if [[ "${visible}" -lt 2 || "${visible}" -gt 4 ]]; then
+  if [[ "${visible}" -lt 2 || "${visible}" -gt "${total}" ]]; then
     die "本仓库脚本适配 2~4 张 A800 并行，当前 ${visible} 卡。请设置 CUDA_VISIBLE_DEVICES / N_GPUS。"
   fi
   local max_idx
@@ -113,4 +113,3 @@ logger_arg() {
     echo "['console']"
   fi
 }
-
