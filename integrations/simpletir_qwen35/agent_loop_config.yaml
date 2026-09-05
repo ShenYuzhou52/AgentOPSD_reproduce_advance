@@ -1,0 +1,2 @@
+- name: simpletir_python
+  _target_: integrations.simpletir_qwen35.simpletir_agent_loop.SimpleTIRPythonAgentLoop
