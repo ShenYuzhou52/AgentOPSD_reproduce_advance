@@ -164,10 +164,46 @@
 验证 → checkpoint），奖励与梯度均非零，方法分支各自激活，消融对比条件成立。
 注意 2 step 的数值只用于链路验证，不是方法结论。
 
-## 七、遗留观察（非阻塞）
+## 七、TIR-Bench baseline（2026-09-07，正式实验前的门槛验证）
 
-- 仍有 33–41% 回合撞 2048 上限（`clip_ratio`），多轮预算与更早终止会随训练改善；
-  若正式实验想进一步降低可统一调大预算，但需三组同参。
+官方参考（Qwen3.5-4B 模型卡 "Tool Calling" 分区，`with CI / without CI` = 带/不带
+Code Interpreter）：**with CI 38.9 / without CI 29.9**。评测集为
+`simplelr_math_35/test.parquet`（500 题），按用户要求用种子 42 的固定 100 题抽样
+（即项目现成的 `test_fixed100_s42.parquet`，与全量 subject 分布成比例）。
+脚本：`scripts/eval_baseline.py`（`--mode cot` 单轮纯推理 / `--mode tir` 复用训练
+同款工具循环；温度 0、非思考模式；需要 `source env.sh` 并把 verl `.venv/bin`
+加入 PATH 以提供 nvcc/ninja）。
+
+| 设定 | answer_accuracy | 备注 |
+|---|---|---|
+| **without CI**（cot，用户门槛 ≥25%） | **81%** | 85% 产出 boxed；15 个错误全部是 3072 token 截断，无打分错误（人工抽查核对） |
+| with CI（tir 工具循环，修正打分后） | **78%** | boxed 83%；含半分规则得分 74.5% |
+| with CI（修正前，stdout-only 错误打分） | 11% | 见下方奖励修正 |
+
+**门槛大幅通过**。两点说明：
+
+1. 官方 29.9/38.9 来自其多模态 TIR-Bench，难度高于本纯文本数学集；本集对
+   Qwen3.5-4B 的纯推理已近天花板（81%），故 with CI 无增益（78%）符合预期——
+   工具收益要在更难题目（AIME）与 RL 训练中体现。
+2. **顺带发现并修正了第四个 bug（奖励来源错误）**：overlay 原实现只从沙箱
+   stdout 提取答案，但上游 `simplelr_math_35` 走 `hf_math_verify.compute_score`，
+   `extract_solution` 从**完整多轮文本**（各 assistant 轮 + 观察）提取最后一个
+   `\boxed{}`；只有 LeetCode 类数据才用"代码 stdout 精确匹配"。模型常正确执行
+   工具后在**文本**里写 boxed（temp 0 下 89% 的正确轨迹如此），stdout-only 把
+   它们全部判 0。已改为全文打分（`simpletir_agent_loop.py` 与评测脚本同步修改），
+   半分规则与防泄漏边界不变。
+
+修正奖励后的 2-step GRPO 预跑（`precheck_20260907/rewardfix_grpo/`，GPU 1,2）：
+`critic/score/mean` 0.565→0.571（修正前 0.038→0.159）、`grad_norm` 0.76/0.65、
+优势 [-2.47, +1.62]、`sandbox_ok_ratio` 0.93、验证 reward@1 0.75、checkpoint
+正常保存。**训练信号比修正前丰富约 15 倍，正式启动实验的条件全部满足。**
+
+## 八、遗留观察（非阻塞）
+
+- 仍有 33–44% 回合撞 2048 上限（`clip_ratio`），cot 模式 15% 撞 3072；随训练
+  改善，如需调整须三组同参。
 - OPSD 验证集 4 题 0 分：温度 0 确定性评估 + 仅 2 step 蒸馏，不构成异常。
 - 沙箱超时 5s 下 sympy 执行 0.25s，余量充足；未观察到超时。
+- 正式实验建议沿用 `MAX_RESPONSE_LENGTH=2048`；baseline 脚本与结果在
+  `experiments/qwen35-simpletir/baseline_tirbench_20260907/`。
 

@@ -42,11 +42,15 @@ binary; a correct response with no substantive Python tool use receives half
 credit.  JSONL records aggregate execution and format rates but never raw gold
 answers, student code, or stdout.
 
-More precisely, the correctness parser receives only actual stdout from code
-that ran in the sandbox.  A `\boxed{}` string inside an unexecuted code fence,
-or a direct text answer with no executed code, terminates the environment but
-does not become a tool-output answer.  This matches the original SimpleTIR
-reward-manager behaviour and prevents a failed tool call from being rewarded.
+More precisely, the correctness parser receives the full episode text: every
+assistant turn followed by its bounded observation, mirroring upstream
+SimpleTIR's `hf_math_verify.compute_score`, whose `extract_solution` reads the
+whole multi-turn output.  The last `\boxed{}` anywhere in that text is the
+prediction, so `final_answer()` output inside an observation and a boxed final
+answer stated by the model score identically.  (An earlier stdout-only
+reading accidentally applied the LeetCode reward path to math data and zeroed
+most correct episodes; measured at temperature 0 it scored 11% where the
+correct semantics score 78%.)
 
 The private teacher branch is skipped in validation, including initial
 validation.  The launch script forces `trace.token2text=False`, disables both

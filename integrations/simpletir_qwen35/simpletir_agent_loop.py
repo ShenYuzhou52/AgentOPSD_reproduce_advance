@@ -217,10 +217,13 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
         runtime_prompt_ids = await self.ct_build_initial_tokens(messages)
 
         outputs: list[AgentLoopOutput] = []
-        # SimpleTIR's math reward is computed from actual code stdout, not a
-        # \boxed{} string merely written inside a model's code fence.  Keeping
-        # that distinction prevents an execution failure from being rewarded.
-        execution_stdout: list[str] = []
+        # SimpleTIR's math reward follows upstream hf_math_verify: the answer
+        # is extracted from the full episode text (every assistant turn plus
+        # its bounded observation, in order), so a correct final answer stated
+        # after a successful tool run scores exactly like final_answer() output.
+        # The earlier stdout-only reading accidentally applied the LeetCode
+        # reward path to math and zeroed most correct episodes.
+        episode_text: list[str] = []
         substantive_tool_use = False
         terminal = False
         debug_turns: list[dict[str, Any]] = []
@@ -293,6 +296,7 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                     priority=priority,
                 )
             outputs.append(output)
+            episode_text.append(text)
             debug_turn = {
                 "turn_step": int(turn_step),
                 "text": text,
@@ -341,8 +345,7 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                     "observation": observation,
                 }
             )
-            if sandbox.stdout:
-                execution_stdout.append(sandbox.stdout)
+            episode_text.append(observation)
             substantive_tool_use = substantive_tool_use or (
                 sandbox.ok and not is_only_final_answer(parsed.code)
             )
@@ -376,7 +379,7 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
         if not isinstance(reward_model, dict) or "ground_truth" not in reward_model:
             raise RuntimeError("SimpleTIR requires reward_model.ground_truth for terminal scoring")
         reward = score_simpletir_math(
-            "\n".join(execution_stdout),
+            "\n".join(episode_text),
             reward_model["ground_truth"],
             substantive_tool_use=substantive_tool_use,
         )
