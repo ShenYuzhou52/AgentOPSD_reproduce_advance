@@ -45,11 +45,36 @@ def _systemd_environment() -> dict[str, str]:
     return env
 
 
+DEFAULT_SANDBOX_VENV = "/data2/ssd/yixinshen/sb_venv"
+# Mount point inside the namespace; a neutral path keeps the host data disk
+# invisible to model programs while pyvenv.cfg still resolves next to the
+# interpreter.
+SANDBOX_VENV_MOUNT = "/opt/sb_venv"
+
+
+def _sandbox_venv() -> Path | None:
+    """Resolve the read-only scientific-compute venv for model programs.
+
+    The system interpreter under bwrap has only the standard library, so any
+    model program importing sympy/numpy/scipy failed and could never earn the
+    SimpleTIR tool reward.  The venv is bound read-only into the same namespace;
+    unset or missing paths fall back to the bare system interpreter, which unit
+    tests rely on when describing historical behaviour.
+    """
+    venv = Path(os.environ.get("SIMPLETIR_SANDBOX_VENV", DEFAULT_SANDBOX_VENV))
+    return venv if (venv / "bin" / "python3").exists() else None
+
+
 def _bwrap_command() -> list[str]:
     binds: list[str] = []
     for path in ("/usr", "/lib", "/lib64"):
         if Path(path).exists():
             binds.extend(["--ro-bind", path, path])
+    venv = _sandbox_venv()
+    interpreter = "/usr/bin/python3"
+    if venv is not None:
+        binds.extend(["--ro-bind", str(venv), SANDBOX_VENV_MOUNT])
+        interpreter = f"{SANDBOX_VENV_MOUNT}/bin/python3"
     return [
         "bwrap",
         "--unshare-all",
@@ -62,6 +87,22 @@ def _bwrap_command() -> list[str]:
         "--setenv",
         "PYTHONHASHSEED",
         "0",
+        # OpenBLAS sizes its pool from sched_getaffinity, which still sees every
+        # host CPU inside the cgroup; with TasksMax=32 the extra threads fail
+        # to spawn and numpy segfaults.  CPUQuota is one core anyway, so a
+        # single BLAS thread is the only setting that can use the budget.
+        "--setenv",
+        "OPENBLAS_NUM_THREADS",
+        "1",
+        "--setenv",
+        "OMP_NUM_THREADS",
+        "1",
+        "--setenv",
+        "MKL_NUM_THREADS",
+        "1",
+        "--setenv",
+        "NUMEXPR_NUM_THREADS",
+        "1",
         "--setenv",
         "HOME",
         "/nonexistent",
@@ -76,7 +117,7 @@ def _bwrap_command() -> list[str]:
         "/work",
         "--chdir",
         "/work",
-        "/usr/bin/python3",
+        interpreter,
         "-I",
         "-B",
         "-",

@@ -125,7 +125,7 @@ class SimpleTIRTrainer(PPOTrainerSync):
         )
         return balanced
 
-    def _write_teacher_response_logprobs(self, batch, metrics: dict) -> tuple[TensorDict, list[dict[str, Any]], np.ndarray]:
+    def _write_teacher_response_logprobs(self, batch, metrics: dict):
         """Validate and write response-aligned teacher scores for the actor update."""
         tensor_data = tq.kv_batch_get(
             keys=batch.keys,
@@ -200,7 +200,7 @@ class SimpleTIRTrainer(PPOTrainerSync):
                 "simpletir/padding_turn_count": float(is_padding.sum()),
             }
         )
-        tq.kv_batch_put(
+        batch = tq.kv_batch_put(
             keys=batch.keys,
             partition_id=batch.partition_id,
             fields=TensorDict(
@@ -208,14 +208,15 @@ class SimpleTIRTrainer(PPOTrainerSync):
                 batch_size=len(batch),
             ),
         )
-        return dense, extras, is_padding
+        return batch, dense, extras, is_padding
 
     def _reshape_agentopsd(self, batch, dense: TensorDict, extras: list[dict[str, Any]], is_padding: np.ndarray, metrics: dict):
         active = ~is_padding
         active_tensor = torch.as_tensor(active, dtype=torch.bool, device=dense["advantages"].device)
-        teacher_values = tq.kv_batch_get(
-            keys=batch.keys, partition_id=batch.partition_id, select_fields=["teacher_response_log_probs"]
-        )["teacher_response_log_probs"].to_padded_tensor()
+        teacher_data = tq.kv_batch_get(
+            keys=batch.keys, partition_id=batch.partition_id, select_fields=["teacher_response_log_probs", "response_mask"]
+        )
+        teacher_values = teacher_data.to_padded_tensor()["teacher_response_log_probs"]
         uid, traj_uid, turn_step, successes = [], [], [], []
         session_advantages: dict[str, list[float]] = {}
         for row, row_key in enumerate(batch.keys):
@@ -259,28 +260,29 @@ class SimpleTIRTrainer(PPOTrainerSync):
                 "agentopsd/teacher_student_gap_rms": metrics["simpletir/teacher_student_gap_rms"],
             }
         )
-        tq.kv_batch_put(
+        batch = tq.kv_batch_put(
             keys=batch.keys,
             partition_id=batch.partition_id,
             fields=TensorDict(
                 {
-                    "advantages": response_to_nested(dense["advantages"], dense["response_mask"]),
-                    "returns": response_to_nested(dense["returns"], dense["response_mask"]),
+                    "advantages": response_to_nested(dense["advantages"], teacher_data["response_mask"]),
+                    "returns": response_to_nested(dense["returns"], teacher_data["response_mask"]),
                 },
                 batch_size=len(batch),
             ),
         )
         metrics.update(diag)
         self._last_credit_diag = diag
+        return batch
 
     def _compute_advantage(self, batch, metrics):
         batch = super()._compute_advantage(batch, metrics)
         self._last_credit_diag = {"agentopsd/reshape_applied": 0.0}
         if self.method == "grpo":
             return batch
-        dense, extras, is_padding = self._write_teacher_response_logprobs(batch, metrics)
+        batch, dense, extras, is_padding = self._write_teacher_response_logprobs(batch, metrics)
         if self.method == "agentopsd":
-            self._reshape_agentopsd(batch, dense, extras, is_padding, metrics)
+            batch = self._reshape_agentopsd(batch, dense, extras, is_padding, metrics)
         return batch
 
     def _rollout_monitor_metrics(self, batch) -> dict[str, float]:

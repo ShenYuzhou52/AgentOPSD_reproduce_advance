@@ -9,8 +9,10 @@ by copying a prior turn to satisfy a batch shape.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -54,6 +56,38 @@ def _safe_rollout_extra_fields(token_output: TokenOutput) -> dict[str, Any]:
         for key in ("min_global_steps", "max_global_steps")
         if key in source
     }
+
+
+def _debug_dump_episode(record: dict[str, Any]) -> None:
+    """Opt-in dump of student-visible trajectory data for failure analysis.
+
+    Enabled only by setting ``SIMPLETIR_DEBUG_DUMP`` to a directory.  The record
+    holds exclusively information the student model itself saw (its question,
+    its own turn texts, bounded observations) plus scalar reward diagnostics;
+    ``ground_truth`` is deliberately never serialised here.  Dump failures must
+    not abort a training rollout, so every error is swallowed.
+    """
+    directory = os.environ.get("SIMPLETIR_DEBUG_DUMP", "")
+    if not directory:
+        return
+    try:
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+        with (path / f"episode-{os.getpid()}-{uuid4().hex}.json").open("w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def _as_token_id(value: Any) -> int:
+    """Unwrap Verl's singleton top-k axis without relaxing token alignment."""
+    if isinstance(value, (tuple, list)):
+        if len(value) != 1:
+            raise RuntimeError("teacher prompt_ids must contain exactly one token per position")
+        value = value[0]
+    if value is None or isinstance(value, (tuple, list)):
+        raise RuntimeError("teacher returned an invalid prompt token id")
+    return int(value)
 
 
 def _as_logprob(value: Any) -> float:
@@ -145,7 +179,7 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
             },
             priority=priority,
         )
-        raw_ids = list(teacher.extra_fields.get("prompt_ids", []))
+        raw_ids = [_as_token_id(value) for value in teacher.extra_fields.get("prompt_ids", [])]
         raw_logprobs = list(teacher.extra_fields.get("prompt_logprobs", []))
         if len(raw_ids) != len(sequence_ids) or len(raw_logprobs) != len(sequence_ids):
             raise RuntimeError(
@@ -189,6 +223,7 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
         execution_stdout: list[str] = []
         substantive_tool_use = False
         terminal = False
+        debug_turns: list[dict[str, Any]] = []
         for turn_step in range(self.max_turns):
             metrics: dict[str, Any] = {}
             request_id = (
@@ -258,6 +293,13 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                     priority=priority,
                 )
             outputs.append(output)
+            debug_turn = {
+                "turn_step": int(turn_step),
+                "text": text,
+                "code_present": parsed.code is not None,
+                "is_void": parsed.is_void,
+            }
+            debug_turns.append(debug_turn)
             runtime_prompt_ids = merged.token_ids
 
             # A direct boxed answer without code ends immediately.  If code is
@@ -289,6 +331,14 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                     "sandbox_ok": float(sandbox.ok),
                     "sandbox_timeout": float(sandbox.timed_out),
                     "observation_chars": float(len(observation)),
+                }
+            )
+            debug_turn.update(
+                {
+                    "sandbox_ok": bool(sandbox.ok),
+                    "sandbox_timed_out": bool(sandbox.timed_out),
+                    "sandbox_returncode": sandbox.returncode,
+                    "observation": observation,
                 }
             )
             if sandbox.stdout:
@@ -333,4 +383,15 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
         final_output = outputs[-1]
         final_output.reward_score = reward.pop("score")
         final_output.extra_fields["reward_extra_info"] = reward
+        _debug_dump_episode(
+            {
+                "is_validation": bool(is_validation),
+                "question": next(
+                    (str(m.get("content")) for m in reversed(raw_prompt) if isinstance(m, dict) and m.get("role") == "user"),
+                    "",
+                ),
+                "turns": debug_turns,
+                "reward_extra_info": reward,
+            }
+        )
         return outputs

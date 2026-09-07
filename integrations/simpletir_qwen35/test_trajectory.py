@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import threading
 import unittest
 
 from integrations.simpletir_qwen35.trajectory import (
@@ -51,6 +52,30 @@ class TestSimpleTIRTrajectory(unittest.TestCase):
         reward = score_simpletir_math(r"\boxed{118}", "118", substantive_tool_use=True)
         self.assertEqual(reward["answer_accuracy"], 1.0)
         self.assertEqual(reward["score"], 1.0)
+
+    def test_python_style_expression_still_scores(self):
+        # final_answer(str(sympy_expr)) prints Python syntax; the latex-first
+        # parser keeps it as a bare string and verify() alone returned False.
+        reward = score_simpletir_math(r"\boxed{5*x**2/2}", r"\frac{5x^2}{2}", substantive_tool_use=True)
+        self.assertEqual(reward["answer_accuracy"], 1.0)
+
+    def test_python_style_fallback_rejects_wrong_expression(self):
+        reward = score_simpletir_math(r"\boxed{5*x**2/3}", r"\frac{5x^2}{2}", substantive_tool_use=True)
+        self.assertEqual(reward["answer_accuracy"], 0.0)
+
+    def test_scoring_works_in_worker_threads(self):
+        # Verl runs agent loops on worker threads; math_verify's SIGALRM
+        # timeout raises ValueError there and the guard silently zeroed every
+        # reward, including correct answers.
+        result = {}
+
+        def score() -> None:
+            result["reward"] = score_simpletir_math("a + b = 8\n\\boxed{8}\n", "8", substantive_tool_use=True)
+
+        thread = threading.Thread(target=score)
+        thread.start()
+        thread.join(timeout=30)
+        self.assertEqual(result["reward"]["answer_accuracy"], 1.0)
 
     def test_observation_is_bounded_and_has_no_hidden_context(self):
         obs = format_observation(stdout="abc" * 500, stderr="", timed_out=False, limit=32)
