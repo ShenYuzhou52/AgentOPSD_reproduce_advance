@@ -28,6 +28,9 @@ RUN_ROOT="${RUN_ROOT:-/data2/ssd/yixinshen/experiments/qwen35-simpletir}"
 
 TRAIN_FILE="${TRAIN_FILE:-${DATA_DIR}/simplelr_math_35/train.parquet}"
 VAL_FILE="${VAL_FILE:-${DATA_DIR}/simplelr_math_35/test_fixed100_s42.parquet}"
+# Optional, disjoint external-distribution probe. It is validation data only,
+# never an optimization input; using it removes its status as a blind test.
+PROBE_VAL_FILE="${PROBE_VAL_FILE:-}"
 
 SEED="${SEED:-42}"
 TRAIN_STEPS="${TRAIN_STEPS:-100}"
@@ -63,9 +66,18 @@ DATALOADER_WORKERS="${DATALOADER_WORKERS:-0}"
 "${PYTHON_BIN}" -c 'import math_verify' || {
   echo "missing required dependency math-verify in ${PYTHON_BIN}" >&2; exit 2; }
 [[ -f "${TRAIN_FILE}" && -f "${VAL_FILE}" ]] || { echo "missing SimpleTIR Parquet" >&2; exit 2; }
+if [[ -n "${PROBE_VAL_FILE}" && ! -f "${PROBE_VAL_FILE}" ]]; then
+  echo "missing probe validation Parquet: ${PROBE_VAL_FILE}" >&2
+  exit 2
+fi
 [[ "${TRAIN_PROMPTS}" -gt 0 && "${ROLLOUT_N}" -gt 1 && "${MAX_TURNS}" -gt 0 ]] || {
   echo "TRAIN_PROMPTS>0, ROLLOUT_N>1, and MAX_TURNS>0 are required" >&2; exit 2;
 }
+
+VAL_FILES_HYDRA="['${VAL_FILE}']"
+if [[ -n "${PROBE_VAL_FILE}" ]]; then
+  VAL_FILES_HYDRA="['${VAL_FILE}','${PROBE_VAL_FILE}']"
+fi
 
 RUN_DIR="${RUN_ROOT}/${EXPERIMENT}"
 CKPT_DIR="${RUN_DIR}/checkpoints"
@@ -99,7 +111,7 @@ ARGS=(
   "algorithm.adv_estimator=grpo"
   "algorithm.use_kl_in_reward=False"
   "data.train_files=['${TRAIN_FILE}']"
-  "data.val_files=['${VAL_FILE}']"
+  "data.val_files=${VAL_FILES_HYDRA}"
   "data.train_batch_size=${TRAIN_PROMPTS}"
   "data.gen_batch_size=${TRAIN_PROMPTS}"
   "data.max_prompt_length=${MAX_PROMPT_LENGTH}"
