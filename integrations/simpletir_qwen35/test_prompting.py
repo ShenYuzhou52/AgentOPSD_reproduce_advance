@@ -1,4 +1,8 @@
-"""Regression tests for the reference SimpleTIR prompt adapter."""
+"""Regression tests for the reference SimpleTIR prompt adapter.
+
+中文说明：前缀只拼一次（幂等）、不改动数据集原行、格式错误立即报错。
+前缀文本与上游逐字一致，改一个字都会影响可比性。
+"""
 
 from __future__ import annotations
 

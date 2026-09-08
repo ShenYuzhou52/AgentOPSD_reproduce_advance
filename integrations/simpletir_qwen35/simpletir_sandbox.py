@@ -1,11 +1,19 @@
 """Local, unprivileged Python sandbox for SimpleTIR rollouts.
 
-This deliberately does not use SimpleTIR's default HTTP sandbox endpoint.  A
-model program is launched in a fresh bubblewrap namespace underneath a scoped
-user systemd service; its only writable files are a new tmpfs and an empty work
-directory.  The host process keeps just enough D-Bus environment to request the
-user service.  ``bwrap --clearenv`` ensures none of that environment reaches
-the untrusted code.
+执行模型生成的 Python 的唯一入口。与上游的 HTTP 沙箱不同，这里用
+systemd-run（用户级瞬时服务，施加 MemoryMax/TasksMax/CPUQuota 等资源上限）
++ bubblewrap（独立 PID/net/IPC 命名空间、清空环境、只读绑定 /usr 与科学
+计算 venv、可写区仅一个 tmpfs /tmp 和空 /work）在本地无特权执行：
+
+    模型代码 → systemd-run --user（资源限额）
+             → timeout（硬超时）
+             → bwrap（文件系统/网络隔离）
+             → /opt/sb_venv/bin/python3 -I -（隔离模式解释器）
+
+两层防线互补：systemd 管"用了多少"，bwrap 管"能看见什么"。历史上这里
+出过两个真实故障（都已修并有回归测试）：系统 Python 缺 sympy/numpy 导致
+工具奖励永远拿不到；OpenBLAS 按宿主 112 核开线程被 TasksMax 杀掉导致
+numpy 段错误。
 """
 
 from __future__ import annotations
@@ -19,6 +27,12 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class SandboxResult:
+    """一次沙箱执行的结构化结果。
+
+    timed_out / rejected 与普通非零退出严格区分：前者是模型行为（写死循环），
+    后者是宿主问题（配置错误），混在一起会让"沙箱坏了"被误读成"模型不行"。
+    """
+
     stdout: str
     stderr: str
     returncode: int | None
@@ -28,6 +42,8 @@ class SandboxResult:
 
     @property
     def ok(self) -> bool:
+        """只有"未被拒 + 未超时 + 退出码 0"才算成功；退出码非零通常意味着
+        模型代码抛了异常（如 ImportError/SyntaxError），是正常的学生错误。"""
         return not self.rejected and not self.timed_out and self.returncode == 0
 
 
@@ -35,6 +51,7 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "\n[truncated]"
 
 
+# 只保留请求用户 systemd 服务所需的最小环境变量。
 def _systemd_environment() -> dict[str, str]:
     """Keep D-Bus routing outside bwrap; never pass broad host env to the program."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
@@ -45,6 +62,7 @@ def _systemd_environment() -> dict[str, str]:
     return env
 
 
+# 指定服务器上的科学计算虚拟环境；挂载时保持只读。
 DEFAULT_SANDBOX_VENV = "/data2/ssd/yixinshen/sb_venv"
 # Mount point inside the namespace; a neutral path keeps the host data disk
 # invisible to model programs while pyvenv.cfg still resolves next to the
@@ -52,6 +70,7 @@ DEFAULT_SANDBOX_VENV = "/data2/ssd/yixinshen/sb_venv"
 SANDBOX_VENV_MOUNT = "/opt/sb_venv"
 
 
+# 确认虚拟环境解释器存在，缺失时回退到系统 Python。
 def _sandbox_venv() -> Path | None:
     """Resolve the read-only scientific-compute venv for model programs.
 
@@ -66,15 +85,18 @@ def _sandbox_venv() -> Path | None:
 
 
 def _bwrap_command() -> list[str]:
+    # 收集需要只读绑定进 bubblewrap 命名空间的运行时目录。
     binds: list[str] = []
     for path in ("/usr", "/lib", "/lib64"):
         if Path(path).exists():
             binds.extend(["--ro-bind", path, path])
     venv = _sandbox_venv()
     interpreter = "/usr/bin/python3"
+    # 将包含 numpy、sympy 等依赖的虚拟环境以只读方式暴露给代码。
     if venv is not None:
         binds.extend(["--ro-bind", str(venv), SANDBOX_VENV_MOUNT])
         interpreter = f"{SANDBOX_VENV_MOUNT}/bin/python3"
+    # 构造清空环境、隔离命名空间并限制可写路径的 bwrap 命令。
     return [
         "bwrap",
         "--unshare-all",
@@ -143,6 +165,7 @@ def run_python(
     therefore request a modestly larger, reward-only limit than the 512-char
     observation limit.
     """
+    # 先拒绝超长或非法输入，避免把异常代码交给沙箱进程。
     if not isinstance(code, str) or len(code.encode("utf-8", errors="ignore")) > code_limit:
         return SandboxResult(
             stdout="",
@@ -155,7 +178,9 @@ def run_python(
     if os.name != "posix":
         return SandboxResult("", "sandbox requires Linux", None, 0.0, False, True)
 
+    # 将超时下限固定为正值，保证 timeout 命令参数合法。
     timeout_seconds = max(float(timeout_seconds), 0.1)
+    # 用 systemd-run 施加内存、进程数、CPU 和文件大小限制。
     cmd = [
         "systemd-run",
         "--user",
@@ -182,6 +207,7 @@ def run_python(
     ]
     started = time.monotonic()
     try:
+        # 同步等待隔离程序退出，并捕获 stdout 与 stderr。
         completed = subprocess.run(
             cmd,
             input=code,
@@ -192,6 +218,7 @@ def run_python(
             env=_systemd_environment(),
         )
         elapsed = time.monotonic() - started
+    # 宿主等待超时时返回结构化结果，不让异常中断 rollout worker。
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - started
         return SandboxResult(
@@ -205,6 +232,7 @@ def run_python(
     # ``systemd-run --pipe`` reports 255 when the inner GNU timeout kills a
     # transient unit.  Requiring near-budget elapsed time prevents immediate
     # systemd/bwrap configuration errors from being misclassified as a timeout.
+    # 结合退出码和耗时区分真实超时与沙箱配置错误。
     timed_out = completed.returncode in {124, 137} or (
         completed.returncode == 255 and elapsed >= timeout_seconds * 0.9
     )

@@ -1,4 +1,9 @@
-"""Regression checks for the text-only Qwen3.5 agent-loop contract."""
+"""Regression checks for the text-only Qwen3.5 agent-loop contract.
+
+中文说明：守护"Qwen3.5 文本-only"约定——位置编码必须是一维文本 RoPE，
+多模态输入必须被拒绝。这是当初 actor old-logprob 阶段位置张量形状炸掉后
+加的回归。
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,9 @@
-"""Host-safety checks using fixed harmless programs, never model output."""
+"""Host-safety checks using fixed harmless programs, never model output.
+
+中文说明：沙箱安全与可用性回归——基础执行、宿主数据盘不可见、科学库
+（venv 挂载）可导入、venv 只读、无外网、死循环被超时杀掉、打分用 stdout
+可超过学生可见窗口。对应修过的"缺科学库"与"OpenBLAS 线程崩溃"故障。
+"""
 
 from __future__ import annotations
 

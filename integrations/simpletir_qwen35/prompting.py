@@ -1,4 +1,9 @@
-"""Reference-compatible, student-visible prompt construction for SimpleTIR."""
+"""Reference-compatible, student-visible prompt construction for SimpleTIR.
+
+唯一职责：把上游 SimpleTIR 的工具使用契约前缀拼到题目消息前。前缀逐字
+复制自上游配置（含围栏代码格式、final_answer() 用法、\\boxed{} 答案格式
+的完整说明），任何措辞改动都可能改变模型行为、破坏与上游的可比性。
+"""
 
 from __future__ import annotations
 
@@ -29,7 +34,13 @@ User Question:
 
 
 def with_simpletir_prompt(raw_prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Apply the reference prefix exactly once, without mutating dataset rows."""
+    """Apply the reference prefix exactly once, without mutating dataset rows.
+
+    deepcopy 保证不污染数据集缓存里的原始行；幂等检查防止上层把同一条
+    prompt 重复包装两遍。前缀拼到每条消息的 content 前沿——与上游
+    RLCustomPromptDataset 的行为一致（实际数据集每行只有一条 user 消息，
+    后续观察消息由 agent loop 追加、不经此函数）。
+    """
     messages = deepcopy(raw_prompt)
     if not messages or not all(isinstance(message, dict) for message in messages):
         raise TypeError("SimpleTIR requires a non-empty chat-message list")

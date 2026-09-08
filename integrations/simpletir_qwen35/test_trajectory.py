@@ -1,4 +1,10 @@
-"""CPU-only regression tests for the SimpleTIR trajectory boundary."""
+"""CPU-only regression tests for the SimpleTIR trajectory boundary.
+
+中文说明：轨迹语义的纯函数回归——围栏/boxed 解析、final_answer 助手的
+转义、观察截断，以及打分场景（正确得分、Python 风格表达式经 sympify
+回退得分、错误表达式零分、worker 线程内打分不为零）。后几项分别锁定
+2026-09-07 修的两个奖励 bug。
+"""
 
 from __future__ import annotations
 

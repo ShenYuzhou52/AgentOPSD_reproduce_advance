@@ -1,4 +1,9 @@
-"""Regression tests for the pinned Verl prompt-logprob wire format."""
+"""Regression tests for the pinned Verl prompt-logprob wire format.
+
+中文说明：锁定钉版 Verl 的 teacher 返回线格式（prompt_ids 为 [[id],...]、
+prompt_logprobs 相对目标左移一位、末尾有哑元槽）。任何一项变化都说明
+Verl 升级改了适配层，必须重新对齐而不是静默错位。
+"""
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock

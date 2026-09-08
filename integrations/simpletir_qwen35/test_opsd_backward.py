@@ -1,4 +1,9 @@
-"""Real OPSD backward pass with ragged responses and a zero-loss padding row."""
+"""Real OPSD backward pass with ragged responses and a zero-loss padding row.
+
+中文说明：用真实（随机权重）前向验证 OPSD 臂的反向传播：ragged 响应上
+梯度有限且非零、padding 行梯度严格为零。对应预跑时修过的
+to_padded_tensor/嵌套张量接口问题。
+"""
 from types import SimpleNamespace
 from unittest import TestCase
 import torch

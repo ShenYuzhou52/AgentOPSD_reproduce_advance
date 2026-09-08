@@ -1,9 +1,16 @@
 """Schema-only guard for SimpleTIR data passed to the privileged teacher.
 
-The raw Parquet keeps ``reward_model.ground_truth`` for the training-side
-scorer.  This module verifies that it stays a sibling of the student prompt,
-not a field inside it, before any rollout worker is launched.  Its summaries
-contain schema metadata only and never stringify a question or answer.
+数据契约预检（main_tir 在启动 Ray/GPU 之前调用）。要防的事故：数据制作者
+为了省事把 ground_truth 塞进 prompt 消息里——那样模型在 rollout 时就能
+"看见"答案，奖励虚高、实验作废。这里逐行验证三件事：
+
+1. prompt 是合法的 chat 消息列表，且任何消息都不含
+   ground_truth/answer/solution/target 禁忌字段；
+2. reward_model.ground_truth 存在（私有打分必需）且与 prompt 平级；
+3. data_source 是字符串（分发奖励函数用）。
+
+返回值只含行数与列名——问题文本和答案都不允许进入日志或 tracker
+（tracker 可能永久保存任意对象）。
 """
 
 from __future__ import annotations

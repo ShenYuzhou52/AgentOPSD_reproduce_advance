@@ -1,4 +1,9 @@
-"""Import and schema preflight for the isolated TIR overlay (no GPU allocation)."""
+"""Import and schema preflight for the isolated TIR overlay (no GPU allocation).
+
+服务器侧预检入口：一次跑通"控制器能 import 全部组件 + 四个数据文件满足
+防泄漏契约"。任何时候改完代码/换数据后先跑它，几秒钟就能发现导入错误或
+schema 问题，而不用等 vLLM 初始化几分钟后才失败。
+"""
 
 from __future__ import annotations
 

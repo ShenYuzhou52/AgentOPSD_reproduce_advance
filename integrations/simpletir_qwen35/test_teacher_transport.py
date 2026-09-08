@@ -1,4 +1,9 @@
-"""Exercise teacher-field transport and variable-length credit on CPU."""
+"""Exercise teacher-field transport and variable-length credit on CPU.
+
+中文说明：CPU 上端到端验证 teacher 字段经 TransferQueue 抵达 actor 的
+传输链路（字段元数据注册）与变长轨迹上的信用重塑——对应预跑时修过的
+"写入了字段但 actor 看不见"的问题。
+"""
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch

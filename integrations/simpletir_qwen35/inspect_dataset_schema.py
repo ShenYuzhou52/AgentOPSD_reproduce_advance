@@ -1,4 +1,8 @@
-"""Print SimpleTIR Parquet field names/types without emitting question or answer text."""
+"""Print SimpleTIR Parquet field names/types without emitting question or answer text.
+
+排查数据问题时用的最小工具：只打印 schema 与列类型。刻意不打印任何行
+内容——样本文本（尤其 ground_truth）不允许出现在终端记录里。
+"""
 
 from __future__ import annotations
 
