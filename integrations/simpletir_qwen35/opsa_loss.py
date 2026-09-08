@@ -140,8 +140,22 @@ def opsa_loss(
         adv_fix=adv_fix,
         delta=delta,
     )
+    # 全 padding micro-batch（ppo_micro_batch_size_per_gpu=1 时可能出现单行
+    # 全零 mask 的平衡补行）按"零损失 padding"不变量静默返回 0，不能当异常。
+    if int(response_mask.sum()) == 0:
+        zero_loss = student_log_probs.sum() * 0.0
+        metrics = {
+            "actor/pg_loss": Metric(value=zero_loss.detach(), aggregation=AggregationType.MEAN),
+            "opsa/pg_loss": Metric(value=zero_loss.detach(), aggregation=AggregationType.MEAN),
+            "opsa/selected_ratio": 0.0,
+            "opsa/adv_mean": 0.0,
+            "opsa/padding_micro_batch": 1.0,
+        }
+        return zero_loss, metrics
+    # 有真实响应 token 却选不出点在构造上不可能（每行 n>0 必有 k>=1）；
+    # 一旦出现说明上游布局被改，保留 fail-loud。
     if not bool(selected.any()):
-        raise RuntimeError("OPSA selected no tokens; batch has no real response tokens")
+        raise RuntimeError("OPSA selected no tokens on a non-empty response batch; layout invariant violated")
 
     config.global_batch_info["dp_size"] = data["dp_size"]
     config.global_batch_info["batch_num_tokens"] = data["batch_num_tokens"]

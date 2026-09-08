@@ -179,3 +179,19 @@ class TestOPSALoss(TestCase):
         flat_logp = torch.tensor(_flat(logp_rows))
         with self.assertRaises(RuntimeError):
             opsa_loss(self._config(), {"log_probs": flat_logp}, data)
+
+    def test_all_padding_micro_batch_returns_zero_loss(self):
+        # ppo_micro_batch_size_per_gpu=1 时可能抽到只含平衡补行的 micro-batch：
+        # 响应 mask 全零 → 必须静默返回零损失（零损失 padding 不变量），不能抛错。
+        mask_rows = [[0] * 4, [0] * 4]
+        logp_rows = [[0.0] * 4, [0.0] * 4]
+        data = _batch_data(mask_rows, logp_rows)
+        flat_logp = torch.tensor(_flat(logp_rows), requires_grad=True)
+        flat_entropy = torch.tensor(_flat(logp_rows))
+        config = self._config()
+        loss, metrics = opsa_loss(config, {"log_probs": flat_logp, "entropy": flat_entropy}, data)
+        self.assertTrue(torch.isfinite(loss))
+        self.assertEqual(loss.item(), 0.0)
+        self.assertEqual(metrics["opsa/padding_micro_batch"], 1.0)
+        loss.backward()
+        self.assertTrue(torch.isfinite(flat_logp.grad).all())
