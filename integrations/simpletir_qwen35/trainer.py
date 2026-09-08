@@ -1,6 +1,6 @@
 """Verl V1 trainer hooks for the three-way SimpleTIR comparison.
 
-本文件是三组消融（grpo / opsd_author_code / agentopsd）在训练侧的唯一分岔点。
+本文件是四组消融（grpo / opsd_author_code / agentopsd / opsa）在训练侧的唯一分岔点。
 继承 Verl 的同步 PPO trainer，在四个位置介入：
 
 - ``_balance_batch``      守卫上游的 batch 平衡，禁止复制真实轨迹行（历史 P0 事故）；
@@ -27,6 +27,7 @@ from tensordict import TensorDict
 from agentopsd.credit import AgentOPSDConfig, reshape_advantages
 from agentopsd.trainer.monitor import AgentOPSDMonitor, append_jsonl
 from integrations.simpletir_qwen35.opsd_loss import sdar_only_loss
+from integrations.simpletir_qwen35.opsa_loss import opsa_loss
 from verl.trainer.ppo.v1.trainer_sync import PPOTrainerSync
 from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.utils.padding import response_to_nested
@@ -34,7 +35,7 @@ from verl.workers.utils.padding import response_to_nested
 
 # 消融臂白名单。启动脚本以 +simpletir.method 注入；不在名单内的名字立即报错，
 # 防止拼写错误（例如 "opsd"）悄悄落入某个默认损失分支，跑出无法归因的结果。
-_METHODS = {"grpo", "opsd_author_code", "agentopsd"}
+_METHODS = {"grpo", "opsd_author_code", "agentopsd", "opsa"}
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -74,7 +75,8 @@ class SimpleTIRTrainer(PPOTrainerSync):
 
     - grpo            纯 Verl GRPO，无 teacher 请求，优势即组内标准化奖励；
     - opsd_author_code 用作者公开代码的门控自蒸馏损失替换策略梯度（见 opsd_loss.py）；
-    - agentopsd       GRPO 之上叠加"答案条件 teacher 前向 + 回合级优势重塑"。
+    - agentopsd       GRPO 之上叠加"答案条件 teacher 前向 + 回合级优势重塑"；
+    - opsa            无 teacher/奖励/KL 的熵自适应负优势（见 opsa_loss.py，arXiv:2608.31046）。
     """
 
     def __init__(self, config):
@@ -121,6 +123,21 @@ class SimpleTIRTrainer(PPOTrainerSync):
                     config=actor_cfg,
                     sdar_coef=float(simpletir.get("opsd_sdar_coef", 0.01)),
                     gate_beta=float(simpletir.get("opsd_gate_beta", 5.0)),
+                )
+            )
+        if self.method == "opsa":
+            # OPSA 同样整体替换策略梯度损失，但不需要 teacher（超参见 opsa_loss.py）。
+            # calculate_entropy 必须开启：OPSA 的优势由 token 熵驱动，缺失即报错。
+            actor_cfg = omega_conf_to_dataclass(self.config.actor_rollout_ref.actor)
+            actor_cfg.model_config = omega_conf_to_dataclass(self.config.actor_rollout_ref.model)
+            simpletir = self.config.simpletir
+            self.actor_rollout_wg.set_loss_fn(
+                partial(
+                    opsa_loss,
+                    config=actor_cfg,
+                    lowest_frac=float(simpletir.get("opsa_lowest_frac", 0.2)),
+                    adv_fix=float(simpletir.get("opsa_adv_fix", -0.75)),
+                    delta=float(simpletir.get("opsa_delta", 1.0)),
                 )
             )
 
@@ -384,7 +401,9 @@ class SimpleTIRTrainer(PPOTrainerSync):
         batch = super()._compute_advantage(batch, metrics)
         # 每步先复位诊断标志；GRPO 臂保持 0，监控里就能直接看出该臂没走重塑。
         self._last_credit_diag = {"agentopsd/reshape_applied": 0.0}
-        if self.method == "grpo":
+        # OPSA 的负优势在损失内部构造（opsa_loss.py），与 GRPO 优势完全无关；
+        # 这里照 grpo 路径原样返回，既不算 teacher 也不改写优势。
+        if self.method in ("grpo", "opsa"):
             return batch
         # OPSD 与 AgentOPSD 都需要 teacher 前向：OPSD 用它驱动蒸馏损失，
         # AgentOPSD 用它做信用分配，因此校验/写回逻辑共用。

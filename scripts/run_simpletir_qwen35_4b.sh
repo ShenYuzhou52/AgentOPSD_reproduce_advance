@@ -13,9 +13,9 @@
 
 set -euo pipefail
 
-METHOD="${METHOD:?set METHOD to grpo, opsd_author_code, or agentopsd}"
+METHOD="${METHOD:?set METHOD to grpo, opsd_author_code, agentopsd, or opsa}"
 case "${METHOD}" in
-  grpo|opsd_author_code|agentopsd) ;;
+  grpo|opsd_author_code|agentopsd|opsa) ;;
   *) echo "invalid METHOD=${METHOD}" >&2; exit 2 ;;
 esac
 
@@ -147,6 +147,8 @@ ARGS=(
   "actor_rollout_ref.actor.kl_loss_coef=0.01"
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1"
   "actor_rollout_ref.actor.entropy_coeff=0.0"
+  # OPSA 的优势由 token 熵驱动，四臂统一开启熵输出（其它臂熵系数为 0，无影响）。
+  "actor_rollout_ref.actor.calculate_entropy=True"
   "actor_rollout_ref.actor.clip_ratio_low=0.2"
   "actor_rollout_ref.actor.clip_ratio_high=0.2"
   "actor_rollout_ref.rollout.name=vllm"
@@ -205,6 +207,9 @@ ARGS=(
   "+simpletir.sandbox_concurrency=4"
   "+simpletir.opsd_sdar_coef=0.01"
   "+simpletir.opsd_gate_beta=5.0"
+  "+simpletir.opsa_lowest_frac=0.2"
+  "+simpletir.opsa_adv_fix=-0.75"
+  "+simpletir.opsa_delta=1.0"
   "+simpletir.agentopsd.lam=0.5"
   "+simpletir.agentopsd.b=0.2"
   "+simpletir.agentopsd.gamma=0.95"

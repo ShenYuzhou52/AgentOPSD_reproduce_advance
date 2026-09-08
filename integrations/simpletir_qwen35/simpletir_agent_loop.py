@@ -348,8 +348,9 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
             )
             # num_turns 从 2 起算（Verl 把初始提示构建也计一轮；日志里
             # training/num_turns/min=2 与此一致），仅供指标统计，不参与训练。
-            # 仅在非 GRPO 的训练 rollout 中计算私有 teacher，验证阶段不读取答案。
-            if self.method != "grpo" and not is_validation:
+            # 仅在需要 teacher 的训练 rollout（opsd_author_code / agentopsd）计算
+            # 私有 teacher；grpo 与 opsa 都不使用 teacher 信号，验证阶段一律跳过。
+            if self.method not in ("grpo", "opsa") and not is_validation:
                 reward_model = kwargs.get("reward_model")
                 if not isinstance(reward_model, dict) or "ground_truth" not in reward_model:
                     raise RuntimeError("SimpleTIR requires reward_model.ground_truth for its private teacher forward")
