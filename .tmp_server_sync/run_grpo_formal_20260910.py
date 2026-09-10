@@ -222,6 +222,20 @@ def phase_formal() -> None:
         write_state("waiting_wandb_key", hint="export WANDB_API_KEY or run wandb login as yixinshen")
         time.sleep(60)
 
+    # also wait for the tuning smoke / any other job to release the GPUs
+    gpu_deadline = time.time() + 4 * 3600
+    while True:
+        raw = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"], text=True)
+        memory = {int(line.split(",")[0]): int(line.split(",")[1]) for line in raw.splitlines()}
+        if all(memory.get(g, 999999) < 1024 for g in (4, 5, 6, 7)):
+            break
+        if time.time() > gpu_deadline:
+            write_state("formal_gpu_wait_timeout", gpu_memory=memory)
+            raise SystemExit(10)
+        write_state("waiting_gpus", gpu_memory=memory)
+        time.sleep(60)
+
     run_dir = ROOT / FORMAL_NAME
     if run_dir.exists() and any(run_dir.iterdir()):
         write_state("formal_dir_not_empty", run_dir=str(run_dir))

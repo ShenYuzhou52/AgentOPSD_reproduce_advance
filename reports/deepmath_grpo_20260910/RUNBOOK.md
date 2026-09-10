@@ -1,5 +1,8 @@
 # 正式 GRPO 重跑（DeepMath 混合难度训练集）— 2026-09-10 运行手册
 
+**当前状态（15:55 更新）**：正式 200 步训练已启动（GPU 4-7），wandb 实时看板：
+<https://wandb.ai/17621741876-tsinghua-university/qwen35_simpletir/runs/6peo8dzi>
+
 ## 1. 训练集更换依据（为什么是 DeepMath-103K）
 
 上一轮 GRPO 训练增长有限的根因之一：`simplelr_math_35` 对 Qwen3.5-4B(thinking+TIR, 15轮, 32k总预算) 太易，
@@ -44,7 +47,15 @@ Big-Math-RL-Verified（250K 无难度标注）、OpenMathReasoning（306K AoPS �
 | 验证 response 留存 | 无 | **每轮验证全量落盘** `<run>/val_generations/<step>.jsonl`（input/output/gt/score） | +wandb 表格随机 24 条 |
 | overlong 监控 | 无 | `scripts/monitor_overlong.py` 常驻：≥10% 告警、≥25% 连续 3 步或 ≥35% 单步自动停训 | 见 §5 |
 | MAX_MODEL_LEN | 18432 | 45056 | 4096 prompt + 32768 生成 + 观察余量 |
+| rollout 吞吐 | 0.40 显存 / 4 workers | **0.55 显存 / 16 workers** | 单步 26min → ~11min（2.2×），200 步约 40h |
 | 其余 | — | 不变 | 4×A800(4,5,6,7)、16 prompt × 8 rollout、lr 1e-6、KL 0.01、200 步、seed 42 |
+
+### smoke 实测（正式启动前全链路验证，全部通过）
+
+- step-1 训练（temp 1.0）：reward **0.473**、overlong 38.3%、aborted 0、episode 平均 25,280 tokens
+- 三源验证一次到位：deepmath_val100 reward 0.48 / AIME24 0.45 / AIME25 0.433（各 30/30/100 题）
+- `val_generations/2.jsonl` 160 行完整落盘（input/output/gt/score/answer_accuracy），抽样输出为流利
+  数学推理 + `\boxed{}` 收尾（"还在说人话" ✓）
 
 ## 3. 编排与状态（服务器）
 
@@ -56,15 +67,21 @@ Big-Math-RL-Verified（250K 无难度标注）、OpenMathReasoning（306K AoPS �
 - 正式 run 目录：`formal_20260910/grpo_deepmath_think32k_t15_s42_formal200/`
   （train.log、metrics.jsonl、checkpoints 每 20 步、保留 3 个、断点续训 RESUME_MODE=auto）
 
-## 4. wandb 部署（正式启动前必须做一次）
+## 4. wandb（已就绪）
 
+服务器 `~/.netrc` 已有有效凭证，`trainer.logger=['console','wandb']` 已生效，
+run 名 `grpo_deepmath_think32k_t15_s42_formal200`，project `qwen35_simpletir`。
+若需换账号：
 ```bash
 ssh -p 16022 yixinshen@124.128.251.62
-/data2/ssd/yixinshen/benchmarks/verl-qwen35-base/.venv/bin/python -m wandb login <你的API_KEY>
+/data2/ssd/yixinshen/benchmarks/verl-qwen35-base/.venv/bin/python -m wandb login <新KEY>
 ```
 
-编排器在 smoke 通过后会**每分钟轮询凭证、最多等 8 小时**，部署完成即自动启动正式训练；
-超时则 `--start-phase formal` 手动重启编排器即可。
+关键 wandb 指标名：
+- `critic/score/mean`（训练 reward）、`val-core/deepmath_val100|aime24|aime25/reward/mean@1`
+- `simpletir/episode_overlong_ratio`、`response_length/clip_ratio`（overlong 两条曲线，预期随训练下降）
+- `response_length/max`、`actor/grad_norm`、`actor/kl_loss`
+- 验证表格（每轮随机 24 条完整 input/output/score）
 
 ## 5. overlong 的现实情况与监控口径（重要）
 

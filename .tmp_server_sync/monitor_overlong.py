@@ -38,9 +38,9 @@ METRICS = (
 )
 
 
-def parse_log(path: Path, since_byte: int) -> tuple[list[dict], int]:
+def parse_log(path: Path, since_byte: int) -> tuple[tuple[list, list], int]:
     if not path.exists():
-        return [], since_byte
+        return ([], []), since_byte
     with path.open("rb") as handle:
         handle.seek(since_byte)
         chunk = handle.read().decode("utf-8", errors="ignore")
