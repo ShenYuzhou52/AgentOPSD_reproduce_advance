@@ -1,6 +1,8 @@
 # 正式 GRPO 重跑（DeepMath 混合难度训练集）— 2026-09-10 运行手册
 
-**当前状态（15:55 更新）**：正式 200 步训练已启动（GPU 4-7），wandb 实时看板：
+**当前状态（16:25 更新）**：正式 200 步训练运行中（GPU 4-7），初始验证（step 0，未训练）已落盘：
+`val_generations/0.jsonl` 160 行，合并 mean score **0.444**（与 0.425 校准目标吻合）。
+wandb 实时看板：
 <https://wandb.ai/17621741876-tsinghua-university/qwen35_simpletir/runs/6peo8dzi>
 
 ## 1. 训练集更换依据（为什么是 DeepMath-103K）
