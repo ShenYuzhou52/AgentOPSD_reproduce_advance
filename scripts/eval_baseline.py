@@ -44,8 +44,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["cot", "tir"], required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--model", default=MODEL_DIR, help="Model/checkpoint to evaluate")
+    parser.add_argument("--data", default=DATA, help="Parquet dataset to evaluate")
     parser.add_argument("--max-turns", type=int, default=5)
     parser.add_argument("--max-tokens", type=int, default=3072)
+    parser.add_argument("--max-model-len", type=int, default=16384)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--thinking", action="store_true")
     parser.add_argument("--gpu-mem", type=float, default=0.85)
@@ -55,8 +58,8 @@ def main() -> None:
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, trust_remote_code=False)
-    rows = pd.read_parquet(DATA)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False)
+    rows = pd.read_parquet(args.data)
     questions = [list(messages) for messages in rows["prompt"]]
     golds = [reward["ground_truth"] for reward in rows["reward_model"]]
 
@@ -68,9 +71,9 @@ def main() -> None:
         return text
 
     llm = LLM(
-        model=MODEL_DIR,
+        model=args.model,
         gpu_memory_utilization=args.gpu_mem,
-        max_model_len=16384,
+        max_model_len=args.max_model_len,
         enable_prefix_caching=(args.mode == "tir"),
         enforce_eager=False,
     )
@@ -167,7 +170,7 @@ def main() -> None:
     score = sum(r["score"] for r in records) / n
     summary = {
         "mode": args.mode, "thinking": args.thinking, "temperature": args.temperature,
-        "max_tokens": args.max_tokens, "n": n,
+        "data": args.data, "max_tokens": args.max_tokens, "max_model_len": args.max_model_len, "n": n,
         "answer_accuracy": acc, "is_boxed_ratio": boxed, "score_with_halving": score,
     }
     print("SUMMARY", json.dumps(summary))

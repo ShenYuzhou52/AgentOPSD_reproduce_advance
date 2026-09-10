@@ -72,6 +72,10 @@ ENABLE_THINKING="${ENABLE_THINKING:-false}"
 # forked DataLoader processes per runner: they add memory pressure without a
 # measurable input-pipeline benefit and one was OOM-killed at smoke teardown.
 DATALOADER_WORKERS="${DATALOADER_WORKERS:-0}"
+# Concurrent agent-loop drivers.  With 32k thinking episodes the rollout is
+# decode-bound; more workers keep enough requests in flight to fill the
+# vLLM KV cache (4 leaves the engines mostly idle).
+AGENT_WORKERS="${AGENT_WORKERS:-4}"
 
 [[ -x "${PYTHON_BIN}" ]] || { echo "missing Python: ${PYTHON_BIN}" >&2; exit 2; }
 [[ -f "${MODEL_DIR}/config.json" ]] || { echo "missing model: ${MODEL_DIR}" >&2; exit 2; }
@@ -209,7 +213,7 @@ ARGS=(
   "actor_rollout_ref.rollout.max_num_seqs=128"
   "actor_rollout_ref.rollout.enable_prefix_caching=False"
   "actor_rollout_ref.rollout.trace.token2text=False"
-  "actor_rollout_ref.rollout.agent.num_workers=4"
+  "actor_rollout_ref.rollout.agent.num_workers=${AGENT_WORKERS}"
   "actor_rollout_ref.rollout.agent.default_agent_loop=simpletir_python"
   "actor_rollout_ref.rollout.agent.agent_loop_config_path=${OVERLAY_DIR}/integrations/simpletir_qwen35/agent_loop_config.yaml"
   "+actor_rollout_ref.rollout.agent.agent_loop_manager_class=integrations.simpletir_qwen35.agent_loop_manager.SimpleTIRAgentLoopManagerTQ"

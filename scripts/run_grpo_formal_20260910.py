@@ -105,8 +105,9 @@ def run_env(experiment: str, steps: int, use_wandb: bool, test_freq: int, save_f
         "MAX_EPISODE_RESPONSE_TOKENS": str(BUDGET),
         "MAX_MODEL_LEN": str(MAX_MODEL_LEN),
         "ACTOR_MINI_BATCH": "8",
-        "GPU_MEMORY_UTILIZATION": "0.40",
+        "GPU_MEMORY_UTILIZATION": "0.55",
         "N_GPUS": "4",
+        "AGENT_WORKERS": "16",
         "TEST_FREQ": str(test_freq),
         "SAVE_FREQ": str(save_freq),
         "MAX_CKPTS": str(max_ckpts),
@@ -160,7 +161,8 @@ def phase_pilots() -> None:
 def phase_build() -> None:
     write_state("building")
     log = (ROOT / "build.log").open("wb")
-    rc = subprocess.call([PYBIN, str(OVERLAY / "scripts/build_deepmath_mix.py")], stdout=log, stderr=subprocess.STDOUT)
+    rc = subprocess.call([PYBIN, str(OVERLAY / "scripts/build_deepmath_mix.py"), "--train-n", "9300"],
+                         stdout=log, stderr=subprocess.STDOUT)
     if rc != 0:
         write_state("build_failed", returncode=rc)
         raise SystemExit(rc)
