@@ -157,8 +157,20 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
         self.observation_limit = int(simpletir_cfg.get("max_observation_chars", 512))
         self.reward_stdout_limit = int(simpletir_cfg.get("reward_stdout_chars", 16 * 1024))
         self.sandbox_concurrency = int(simpletir_cfg.get("sandbox_concurrency", 4))
+        self.max_episode_response_tokens = int(simpletir_cfg.get("max_episode_response_tokens", 16 * 1024))
+        # Length/overlong penalty knobs.  Default lambda=0 keeps the reward
+        # identical to the plain SimpleTIR score (ablations stay comparable);
+        # "quota" mode charges linearly above a free token quota, "overlong"
+        # mode is a flat charge on budget-exhausted episodes.
+        self.length_penalty_lambda = float(simpletir_cfg.get("length_penalty_lambda", 0.0))
+        self.length_penalty_mode = str(simpletir_cfg.get("length_penalty_mode", "quota"))
+        self.length_penalty_free_frac = float(simpletir_cfg.get("length_penalty_free_frac", 0.5))
+        if self.length_penalty_lambda < 0 or self.length_penalty_free_frac < 0:
+            raise ValueError("simpletir.length_penalty_* must be non-negative")
         if self.max_turns < 1:
             raise ValueError("simpletir.max_turns must be positive")
+        if self.max_episode_response_tokens < 1:
+            raise ValueError("simpletir.max_episode_response_tokens must be positive")
         if self.reward_stdout_limit < self.observation_limit:
             raise ValueError("simpletir.reward_stdout_chars must be at least max_observation_chars")
         if self.sandbox_concurrency < 1:
@@ -282,6 +294,8 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
         substantive_tool_use = False
         terminal = False
         debug_turns: list[dict[str, Any]] = []
+        episode_response_tokens = 0
+        episode_overlong = False
         # 每个样本最多执行配置指定的工具交互轮数。
         for turn_step in range(self.max_turns):
             metrics: dict[str, Any] = {}
@@ -292,12 +306,18 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                 else uuid4().hex
             )
             # 记录 rollout 生成耗时，供训练日志汇总。
+            remaining_tokens = self.max_episode_response_tokens - episode_response_tokens
+            if remaining_tokens <= 0:
+                raise RuntimeError("SimpleTIR attempted generation after exhausting the episode token budget")
+            turn_sampling_params = dict(sampling_params)
+            requested_tokens = int(turn_sampling_params.get("max_tokens", remaining_tokens))
+            turn_sampling_params["max_tokens"] = min(requested_tokens, remaining_tokens)
             with simple_timer("generate_sequences", metrics):
                 # 向当前策略的 rollout 服务请求本轮助手续写。
                 generated: TokenOutput = await self.server_manager.generate(
                     request_id=request_id,
                     prompt_ids=runtime_prompt_ids,
-                    sampling_params=sampling_params,
+                    sampling_params=turn_sampling_params,
                     priority=priority,
                 )
             metrics["num_preempted"] = generated.num_preempted if generated.num_preempted is not None else -1
@@ -315,6 +335,9 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
             # merged.token_ids = prompt_ids + response_ids；按 mask 长度切分出
             # 本轮的 prompt 部分与响应部分，作为一行训练数据的两个区间。
             response_ids = merged.token_ids[-len(response_mask) :]
+            episode_response_tokens += len(response_ids)
+            turn_hit_episode_budget = episode_response_tokens >= self.max_episode_response_tokens
+            episode_overlong = episode_overlong or turn_hit_episode_budget
             prompt_ids = merged.token_ids[: len(merged.token_ids) - len(response_mask)]
             text = self.tokenizer.decode(generated.token_ids, skip_special_tokens=True)
             # 解析 fenced Python 和 boxed answer，决定是否调用沙箱或结束轨迹。
@@ -329,6 +352,9 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                     "sandbox_ok": 0.0,
                     "sandbox_timeout": 0.0,
                     "observation_chars": 0.0,
+                    "is_terminal_turn": 0.0,
+                    "episode_response_tokens_so_far": float(episode_response_tokens),
+                    "turn_hit_episode_budget": float(turn_hit_episode_budget),
                 }
             )
             # 为实际生成的这一轮建立一条训练行，不复制或填充旧轮次。
@@ -426,6 +452,10 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
                 terminal = True
                 break
 
+            if turn_hit_episode_budget:
+                terminal = True
+                break
+
             # The assistant text is already represented by ``runtime_prompt_ids``.
             # Only merge the newly appended non-assistant observation next.
             # 把助手文本追加到对话历史，再加入沙箱 observation 供下一轮使用。
@@ -445,6 +475,7 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
             raise RuntimeError("SimpleTIR generated no turn rows")
         if not terminal and len(outputs) != self.max_turns:
             raise RuntimeError("SimpleTIR ended without a terminal condition")
+        turn_limit_hit = not terminal and len(outputs) == self.max_turns
 
         # Gold never enters student-visible messages, observations, output
         # fields, or logs.  AgentOPSD may use it privately in the teacher
@@ -458,7 +489,32 @@ class SimpleTIRPythonAgentLoop(AgentLoopBase):
             reward_model["ground_truth"],
             substantive_tool_use=substantive_tool_use,
         )
+        # Training-only length penalty, applied BEFORE the score reaches
+        # GRPO's group normalization so it acts as within-group relative
+        # pressure ("shorter correct beats longer correct").  Validation
+        # keeps the pure task score for cross-run comparability.
+        length_penalty = 0.0
+        if not is_validation and self.length_penalty_lambda > 0.0:
+            if self.length_penalty_mode == "overlong":
+                length_penalty = self.length_penalty_lambda * float(episode_overlong)
+            else:
+                free = self.length_penalty_free_frac * self.max_episode_response_tokens
+                overshoot = max(0.0, episode_response_tokens - free)
+                span = max(1.0, self.max_episode_response_tokens - free)
+                length_penalty = self.length_penalty_lambda * (overshoot / span)
+        if length_penalty > 0.0:
+            reward["score"] = max(0.0, reward["score"] - length_penalty)
+        reward["length_penalty"] = length_penalty
+
         final_output = outputs[-1]
+        final_output.extra_fields.update(
+            {
+                "is_terminal_turn": 1.0,
+                "episode_response_tokens": float(episode_response_tokens),
+                "episode_overlong": float(episode_overlong),
+                "episode_turn_limit_hit": float(turn_limit_hit),
+            }
+        )
         # 只在末轮存主奖励；worker 随后将其广播到该 episode 的前序行。
         # reward.pop 把 score 从诊断 dict 中移除，避免同一数值以两种
         # 形态进入 extra_fields。
