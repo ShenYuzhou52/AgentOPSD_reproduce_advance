@@ -9,7 +9,7 @@
 #   <run>/checkpoints_keep/   model-only copies of EVERY step, never deleted
 set -u
 
-RUN_DIR=/data2/ssd/yixinshen/experiments/qwen35-simpletir/formal_20260910/grpo_deepmath_think32k_t15_s42_formal200
+RUN_DIR="${RUN_DIR_OVERRIDE:-/data2/ssd/yixinshen/experiments/qwen35-simpletir/formal_20260910/grpo_deepmath_think32k_t15_s42_formal200}"
 KEEP=$RUN_DIR/checkpoints_keep
 STATE=$RUN_DIR/janitor_state.json
 LOCK=$RUN_DIR/janitor.lock
